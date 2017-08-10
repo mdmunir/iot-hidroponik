@@ -161,9 +161,11 @@ void processCommand() {
       RTC.readClock();
       RTC.getFormatted(formatted);
       Serial.print(formatted);
+      Serial.print(' ');
+      Serial.print(RTC.getDayOfWeek());
       Serial.println();
       break;
-      
+
     // set waktu YYMMDD-HHIISS
     case SET_TIME:
       in = readSerialIntN(2);
@@ -213,12 +215,8 @@ void processCommand() {
           break;
         }
       }
-      if (idx >= 0) {
-        if (setTimer(idx)) {
-          Serial.println("Success");
-        } else {
-          Serial.println("Fail");
-        }
+      if (idx >= 0 && setTimer(idx)) {
+        Serial.println("Success");
       } else {
         Serial.println("Fail");
       }
@@ -244,12 +242,8 @@ void processCommand() {
       } else {
         idx = first;
       }
-      if (idx >= 0) {
-        if (setTimer(idx)) {
-          Serial.println("Success");
-        } else {
-          Serial.println("Fail");
-        }
+      if (idx >= 0 && setTimer(idx)) {
+        Serial.println("Success");
       } else {
         Serial.println("Fail");
       }
@@ -298,9 +292,9 @@ void processCommand() {
         if (digitalRead(outputPins[x])) {
           Serial.print("ON ");
           Serial.print(x);
-          if(timerDurations[x] > 0){
+          if (timerDurations[x] > 0) {
             Serial.print(' ');
-            Serial.print(timerDurations[x]-1);
+            Serial.print(timerDurations[x] - 1);
             Serial.print(':');
             Serial.print(dtkSisa);
           }
@@ -308,8 +302,8 @@ void processCommand() {
           Serial.print("OFF ");
           Serial.print(x);
         }
-        Serial.println();        
-      }      
+        Serial.println();
+      }
       break;
 
     default:
@@ -332,16 +326,16 @@ void processKeypad() {
       setStatePin(x, state, 5);
     }
   }
-  if(lastKey == key){
+  if (lastKey == key) {
     holdTime++;
-    if(holdTime > HOLD_KEY_TIME && key >= '1' && key <= '8'){ // jika tombol ditahan 3 detik
+    if (holdTime > HOLD_KEY_TIME && key >= '1' && key <= '8') { // jika tombol ditahan 3 detik
       x = key - '1';
-      if(digitalRead(outputPins[x])){ // jika kondisi sedang ON
+      if (digitalRead(outputPins[x])) { // jika kondisi sedang ON
         setStatePin(x, true, 0);
         holdTime = 0;
       }
     }
-  }else{
+  } else {
     holdTime = 0;
   }
   lastKey = key;
@@ -406,7 +400,8 @@ void processTimer() {
     if (obj.config >> 4 == TIMER_VALID) { // valid
       action = (obj.config & B00001000) == B00001000; // ON atau OFF
       x = obj.config & B00000111; // nomor pin
-      objDayOfWeek = obj.durasi >> 13; // day of week disimpan bersama durasi sebagai bit ke 12-15
+      // day of week disimpan bersama durasi sebagai bit ke 12-15. Range nilai 0 - 6
+      objDayOfWeek = (obj.durasi >> 13) + 1;
 
       // cocokkan konfig
       match = (obj.y >= 100 || obj.y == y) &&
@@ -414,7 +409,7 @@ void processTimer() {
               (obj.d > 31 || obj.d == d) &&
               (obj.h > 23 || obj.h == h) &&
               (obj.i > 59 || obj.i == i) &&
-              (objDayOfWeek >= 7 || objDayOfWeek == w);
+              (objDayOfWeek > 7 || objDayOfWeek == w);
       if (match) {
         // jika timer cocok, set state yang sesuai
         durasi = (obj.durasi << 3) >> 3;
@@ -482,8 +477,8 @@ boolean setTimer(byte address) {
 
   if (Serial.available()) { // day of week
     c = Serial.read();
-    if (c >= '0' && c <= '6') {
-      obj.durasi = (c - '0') << 13;
+    if (c >= '1' && c <= '7') {
+      obj.durasi = (c - '1') << 13;
     } else if (c == '*') {
       obj.durasi = 7 << 13;
     } else {
@@ -521,7 +516,7 @@ void getTimers() {
       Serial.print(x);
       Serial.print(' ');
 
-      objDayOfWeek = obj.durasi >> 13; // day of week disimpan bersama durasi sebagai bit ke 13-15
+      objDayOfWeek = (obj.durasi >> 13) + 1; // day of week disimpan bersama durasi sebagai bit ke 13-15
       durasi = (obj.durasi << 3) >> 3;
 
       if (obj.i >= 60) {
@@ -555,7 +550,7 @@ void getTimers() {
         Serial.print(obj.y);
       }
       Serial.print(' ');
-      if (objDayOfWeek >= 7) {
+      if (objDayOfWeek > 7) {
         Serial.print('*');
       } else {
         Serial.print(objDayOfWeek);
@@ -565,7 +560,7 @@ void getTimers() {
       Serial.println();
     }
   }
-  Serial.print("Sisa timer: ");
+  Serial.print("Timer avalible: ");
   Serial.print(TIMER_COUNT - n);
   Serial.println();
 }
