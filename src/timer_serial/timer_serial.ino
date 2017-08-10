@@ -27,7 +27,7 @@
 
    # Untuk mendapatkan daftar timer adalah dengan mengirim perintah l.
 
-   # Untuk melihat state pin menggunakan perintah s.
+   # Untuk melihat state pin menggunakan perintah s. Untuk detail state perintahnya adalah S.
 */
 #include <RealTimeClockDS1307.h>
 #include <EEPROM.h>
@@ -85,8 +85,7 @@ struct TTimer {
 };
 
 void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   // set mode pin (2 - 9) sebagai output
   byte i;
@@ -290,17 +289,16 @@ void processCommand() {
       dtkSisa = 60 - (count % 60);
       for (x = 0; x < sizeof(outputPins); x++) {
         if (digitalRead(outputPins[x])) {
-          Serial.print("ON ");
           Serial.print(x);
+          Serial.print(" ON ");
           if (timerDurations[x] > 0) {
-            Serial.print(' ');
             Serial.print(timerDurations[x] - 1);
             Serial.print(':');
             Serial.print(dtkSisa);
           }
         } else {
-          Serial.print("OFF ");
           Serial.print(x);
+          Serial.print(" OFF");
         }
         Serial.println();
       }
