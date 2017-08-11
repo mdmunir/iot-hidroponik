@@ -2,7 +2,7 @@
 Projek iot untuk hidroponik.
 
 # Wiring
-* Arduino nano dihubungkan dengan RTC1307 lewat I2C. Port `A4` arduino ke port `SCL` RTC dan port `A5` arduino ke port `SDL` RTC.
+* Arduino nano dihubungkan dengan RTC1307 lewat I2C. Port `A4` arduino ke port `SDA` RTC dan port `A5` arduino ke port `SCL` RTC.
 * Arduino ke `keypad 4x4` dihubungkan lewat port `2` sampai `9`.
 * Arduino ke relay dihubungkan lewat port `10`, `11`, `12`, `13`, `A0`, `A1`, `A2` dan `A3`.
 * Arduino ke wemos dihubungkan lewat port serial. Kecepatan yang digunakan adalah `115200`.
@@ -36,4 +36,9 @@ Sistem dapat diprogram dengan mengirimkan perintah ke arduino lewat serial port.
 
 Jika arduino terhubung dengan wemos dan jaringan. Perintah yang sama dapat juga dikirimkan lewat url `/serial?cmd=isi_command`.
 
+# Wemos `command`
+Wemos sendiri dapat diprogram lewat serial port. Perintah-perintah yang tersedia adalah
+
+* Mengganti nama `SSID` dan `password` untuk wifi. Commandnya adalah `sNAMA_SSID` dan `pPASSWORD`. Command `SNAMA_SSID` dan `PPASSWORD` akan sekaligus menyimpan nilainya dalam EEPROM.
+* State dari port dapat dirubah lewat command `1`, `0` dan `x`. 
 
