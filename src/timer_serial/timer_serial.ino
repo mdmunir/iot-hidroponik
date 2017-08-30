@@ -1,26 +1,26 @@
 /**
    Timer dengan interface serial
    # Untuk mengatur waktu adalah dengan mengirim perintah
-       tYYMMDD-HHIISS --> Contoh t170809-073426 mengatur waktu ke 09/08/2017 07:34:26
+       tYYMMDD-HHIISS[-W] --> Contoh t170809-073426 mengatur waktu ke 09/08/2017 07:34:26
+                              W adalah day of week (opsional). Contoh dengan set tanggal dengan day of week t170812-073426-6
 
    # Untuk mendapatkan waktu sekarang adalah dengan mengirim perintah n.
 
-   # Untuk menyalahkan/mematikan relay
-       1P[DURASI] --> P adalah no relay(0-7). Durasi adalah opsional. Contoh 15100 : menyalahkan relay 5 selama 100 menit
-       0P --> Contoh 05 : mematikan relay 5
-       xP[DURASI] --> Menukar state dari relay. Jika state sekarang adalah ON, durasi akan dipakai.
+   # Untuk menyalahkan/mematikan pin (1|0|x)(0-7) [DURASI]. Contoh:
+       - 15 100 : menyalahkan pin 5 selama 100 menit
+       - 05 --> : mematikan pin 5
+       - x2 [5] --> Menukar state dari pin 2. Jika state sekarang adalah ON, durasi 5 menit akan diterapkan.
 
    # Menambah atau mengubah timer.
      -Menambah timer.
-       aCPIIHHDDMMYYW[DURASI] --> C adalah action ('0' atau '1').
-                                P adalah no relay (0 - 7).
-                                IIHHDDMMYY adalah menit, jam, tanggal, bulan dan tahun. Jika angka maka harus 2 digit atau karakter
-                                W adalah hari ke dalam seminggu (0-6 atau *).
-                                Contoh a150007****10 -> nyalakan relay 5 pada jam 7 menit ke 0 setiap hari(bulan dan tahun) selama 10 menit.
+       a(1|0)(0-7) YY-MM-DD HH:II W [DURASI] --> Digit pertama adalah action ('0' atau '1').
+                                Digit kedua adalah no pin (0 - 7).
+                                YY-MM-DD HH:II W adalah tahun, bulan, tanggal, menit serta hari ke dalam seminggu.
+                                Contoh a15 * * * 7 00 * 10 -> nyalakan relay 5 pada jam 7 menit ke 0 setiap hari(bulan dan tahun) selama 10 menit.
 
      -Update timer
-       eA:CPIIHHDDMMYYW[DURASI] --> A adalah index timer yang akan diedit. Contoh e15:150507****10 -> edit timer ke 15 menjadi nyalakan relay pada jam 7 menit ke 5
-                                  setiap hari(bulan dan tahun) selama 10 menit.
+       eA:(1|0)(0-7) YY-MM-DD HH:II W [DURASI] --> A adalah index timer yang akan diedit. Lihat bagian "Menambah timer".
+                               Contoh e3:15 * * * 7 00 1 5 -> nyalakan setiap Senin jam 7:00 selama 5 menit.
 
      -Delete timer
        dA                       --> A adalah index timer. Contoh d15 -> delete timer ke 15.
@@ -48,9 +48,14 @@
 #define STATE_PIN_DETAIL 'S'
 #define HOLD_KEY_TIME 3 // tahan 3 detik untuk menyalakan terus
 
+#define TDS_SOURCE_1 2
+#define TDS_SOURCE_2 3
+#define TDS_INPUT A0
+
+
 const byte TIMER_VALID = B1001;
 int count = 0;
-byte outputPins[] = {10, 11, 12, 13, A0, A1, A2, A3}; // pin ke relay
+byte outputPins[] = {10, 11, 12, 13}; // pin ke relay
 int timerDurations[] = {0, 0, 0, 0, 0, 0, 0, 0};
 byte TIMER_COUNT, TIMER_SIZE;
 char lastKey = NO_KEY;
@@ -72,7 +77,7 @@ byte colPins[numCols] = {5, 4, 3, 2}; //Columns 0 to 3
 
 //initializes an instance of the Keypad class
 
-Keypad myKeypad = Keypad(makeKeymap(keymap), rowPins, colPins, numRows, numCols);
+//Keypad myKeypad = Keypad(makeKeymap(keymap), rowPins, colPins, numRows, numCols);
 
 struct TTimer {
   byte config;
@@ -83,51 +88,6 @@ struct TTimer {
   byte i;
   unsigned int durasi;
 };
-
-void setup() {
-  Serial.begin(115200);
-
-  // set mode pin (2 - 9) sebagai output
-  byte i;
-  for (i = 0; i < sizeof(outputPins); i++) {
-    pinMode(outputPins[i], OUTPUT);
-  }
-
-  // kalibrasi waktu
-  RTC.readClock();
-  count = RTC.getSeconds();
-
-  TIMER_SIZE = sizeof(TTimer);
-  TIMER_COUNT = EEPROM.length() / TIMER_SIZE;
-}
-
-void loop() {
-  byte i;
-  processCommand();
-  processKeypad();
-
-  if (count % 60 == 0) {
-    // matikan state yg durasinya sudah habis
-    for (i = 0; i < sizeof(outputPins); i++) {
-      if (timerDurations[i] > 0) {
-        timerDurations[i]--;
-        if (timerDurations[i] == 0) {
-          digitalWrite(outputPins[i], LOW);
-          Serial.print("OFF ");
-          Serial.println(i);
-        }
-      }
-    }
-    processTimer();
-  }
-  if (count >= 3600) { // kalibarsi detik
-    RTC.readClock();
-    count = RTC.getSeconds();
-  }
-
-  count++;
-  delay(1000);
-}
 
 void setStatePin(byte x, boolean state, int durasi) {
   digitalWrite(outputPins[x], state);
@@ -143,6 +103,24 @@ void setStatePin(byte x, boolean state, int durasi) {
   Serial.println(x);
 }
 
+int getEepromAddress(int idx) {
+  TTimer obj;
+  int c = 0, x;
+  for (x = 0; x < TIMER_COUNT; x++) {
+    EEPROM.get(x * TIMER_SIZE, obj);
+    if (obj.config >> 4 == TIMER_VALID) { // valid
+      if (idx == c) {
+        return x;
+      }
+      c++;
+    } else if (idx < 0) {
+      return x;
+    }
+  }
+  return -1;
+}
+
+// baca inputan dari serial.
 void processCommand() {
   if (!Serial.available()) {
     return;
@@ -153,6 +131,7 @@ void processCommand() {
   boolean state;
   char c;
   TTimer obj;
+  float tds;
 
   char command = Serial.read();
   switch (command) {
@@ -180,6 +159,11 @@ void processCommand() {
       RTC.setMinutes(in);
       in = readSerialIntN(2);
       RTC.setSeconds(in);
+      if (Serial.available()) {
+        Serial.read(); // sparator
+        in = readSerialIntN(1);
+        RTC.setDayOfWeek(in);
+      }
       RTC.setClock();
       Serial.println("Done");
       break;
@@ -199,6 +183,7 @@ void processCommand() {
         } else {
           state = !digitalRead(pin); // toggle
         }
+        Serial.read(); // spasi
         durasi = readSerialIntN(5);
         setStatePin(x, state, durasi);
       }
@@ -206,14 +191,7 @@ void processCommand() {
 
     // tambah timer.
     case ADD_TIMER:
-      idx = -1;
-      for (x = 0; x < TIMER_COUNT; x++) {
-        EEPROM.get(x * TIMER_SIZE, obj);
-        if (obj.config >> 4 != TIMER_VALID) { // valid
-          idx = x;
-          break;
-        }
-      }
+      idx = getEepromAddress(-1);
       if (idx >= 0 && setTimer(idx)) {
         Serial.println("Success");
       } else {
@@ -224,23 +202,7 @@ void processCommand() {
     // edit timer
     case EDIT_TIMER:
       idx = readSerialIntN(3); // address
-      for (x = 0; x < TIMER_COUNT; x++) {
-        EEPROM.get(x * TIMER_SIZE, obj);
-        if (obj.config >> 4 == TIMER_VALID) { // valid
-          if (ii == idx) {
-            idxFound = x;
-            break;
-          }
-          ii++;
-        } else if (first == -1) { // cari address pertama yang kosong
-          first = x;
-        }
-      }
-      if (idxFound >= 0) {
-        idx = idxFound;
-      } else {
-        idx = first;
-      }
+      idx = getEepromAddress(idx);
       if (idx >= 0 && setTimer(idx)) {
         Serial.println("Success");
       } else {
@@ -250,17 +212,8 @@ void processCommand() {
 
     case DELETE_TIMER:
       idx = readSerialIntN(3); // address
-      for (x = 0; x < TIMER_COUNT; x++) {
-        EEPROM.get(x * TIMER_SIZE, obj);
-        if (obj.config >> 4 == TIMER_VALID) { // valid
-          if (ii == idx) {
-            idxFound = x;
-            break;
-          }
-          ii++;
-        }
-      }
-      if (idxFound >= 0) {
+      idx = getEepromAddress(idx);
+      if (idx >= 0) {
         obj.config = 0;
         EEPROM.put(idx * TIMER_SIZE, obj);
         Serial.println("Success");
@@ -274,7 +227,6 @@ void processCommand() {
       break;
 
     case STATE_PIN:
-      Serial.print("State: ");
       for (x = 0; x < sizeof(outputPins); x++) {
         if (digitalRead(outputPins[x])) {
           Serial.print('1');
@@ -304,6 +256,11 @@ void processCommand() {
       }
       break;
 
+    case 'c':
+      tds = samplingTds();
+      Serial.println(tds);
+      break;
+
     default:
       Serial.readString();
       Serial.print("Unknown command: ");
@@ -314,9 +271,19 @@ void processCommand() {
 }
 
 void processKeypad() {
-  char key = myKeypad.getKey();
-  byte x;
+  char key;
+  byte x, i;
   boolean state;
+
+  for (i = 0; i < 5; i++) {
+    //key = myKeypad.getKey();
+    if (key != NO_KEY) {
+      break;
+    } else {
+      lastKey = NO_KEY;
+      delay(200);
+    }
+  }
   if (key != NO_KEY && key != lastKey) {
     if (key >= '1' && key <= '8') {
       x = key - '1';
@@ -337,6 +304,7 @@ void processKeypad() {
     holdTime = 0;
   }
   lastKey = key;
+  delay(200 * (5 - i));
 }
 
 int readSerialIntN(int l) {
@@ -356,27 +324,22 @@ int readSerialIntN(int l) {
 }
 
 int readSerialIntX(int max) {
-  int r = 0;
-  char c;
-  if (Serial.available()) {
-    c = Serial.read();
-    if (c == '*') {
+  int i = 0;
+  boolean done = false;
+  while (Serial.available() && !done)
+  {
+    char c = Serial.read();
+    if (i == 0 && c == '*') {
+      Serial.read(); // spasi
       return 255;
     }
-    if (c >= '0' && c <= '9') { // angka pertama
-      r = 10 * (c - '0');
-    }
-    if (Serial.available()) {
-      c = Serial.read();
-      if (c >= '0' && c <= '9') { // angka kedua
-        r = r + (c - '0');
-        if (r <= max) {
-          return r;
-        }
-      }
+    if (c >= '0' && c <= '9') {
+      i = i * 10 + (c - '0');
+    } else {
+      done = true;
     }
   }
-  return -1;
+  return i <= max ? i : -1;
 }
 
 void processTimer() {
@@ -441,16 +404,17 @@ boolean setTimer(byte address) {
   } else {
     return false;
   }
+  Serial.read(); // spasi
 
-  in = readSerialIntX(59); // minute
+  in = readSerialIntX(99); // year
   if (in >= 0) {
-    obj.i = in;
+    obj.y = in;
   } else {
     return false;
   }
-  in = readSerialIntX(23); // hour
+  in = readSerialIntX(12); // month
   if (in >= 0) {
-    obj.h = in;
+    obj.m = in;
   } else {
     return false;
   }
@@ -460,15 +424,15 @@ boolean setTimer(byte address) {
   } else {
     return false;
   }
-  in = readSerialIntX(12); // month
-  if (in >= 1) {
-    obj.m = in;
+  in = readSerialIntX(23); // hour
+  if (in >= 0) {
+    obj.h = in;
   } else {
     return false;
   }
-  in = readSerialIntX(99); // year
+  in = readSerialIntX(59); // minute
   if (in >= 0) {
-    obj.y = in;
+    obj.i = in;
   } else {
     return false;
   }
@@ -484,6 +448,7 @@ boolean setTimer(byte address) {
     }
   }
 
+  Serial.read(); // spasi
   in = readSerialIntN(4); // durasi -> 4 digit max 8191
   if (in <= 8191) {
     obj.durasi = obj.durasi + in;
@@ -517,38 +482,41 @@ void getTimers() {
       objDayOfWeek = (obj.durasi >> 13) + 1; // day of week disimpan bersama durasi sebagai bit ke 13-15
       durasi = (obj.durasi << 3) >> 3;
 
-      if (obj.i >= 60) {
+      if (obj.y >= 100) { // tahun
+        Serial.print('*');
+      } else {
+        Serial.print(obj.y);
+      }
+      Serial.print('-');
+
+      if (obj.m > 12) { // bulan
+        Serial.print('*');
+      } else {
+        Serial.print(obj.m);
+      }
+      Serial.print('-');
+
+      if (obj.d > 31) { // tanggal
+        Serial.print('*');
+      } else {
+        Serial.print(obj.d);
+      }
+      Serial.print(' ');
+
+      if (obj.h >= 24) { // jam
+        Serial.print('*');
+      } else {
+        Serial.print(obj.h);
+      }
+      Serial.print(':');
+      if (obj.i >= 60) { // menit
         Serial.print('*');
       } else {
         Serial.print(obj.i);
       }
       Serial.print(' ');
 
-      if (obj.h >= 24) {
-        Serial.print('*');
-      } else {
-        Serial.print(obj.h);
-      }
-      Serial.print(' ');
-      if (obj.d > 31) {
-        Serial.print('*');
-      } else {
-        Serial.print(obj.d);
-      }
-      Serial.print(' ');
-      if (obj.m > 12) {
-        Serial.print('*');
-      } else {
-        Serial.print(obj.m);
-      }
-      Serial.print(' ');
-      if (obj.y >= 100) {
-        Serial.print('*');
-      } else {
-        Serial.print(obj.y);
-      }
-      Serial.print(' ');
-      if (objDayOfWeek > 7) {
+      if (objDayOfWeek > 7) { // dayofweek
         Serial.print('*');
       } else {
         Serial.print(objDayOfWeek);
@@ -558,8 +526,77 @@ void getTimers() {
       Serial.println();
     }
   }
-  Serial.print("Timer avalible: ");
+  Serial.print("Timer available: ");
   Serial.print(TIMER_COUNT - n);
   Serial.println();
+}
+
+
+
+float samplingTds() {
+  float x1, x2, r;
+  float C1 = 0.0, C2 = 1000.0;
+  // sampling 1 -> 1+, 2-
+  digitalWrite(TDS_SOURCE_1, HIGH);
+  digitalWrite(TDS_SOURCE_2, LOW);
+  x1 = analogRead(TDS_INPUT);
+
+  // sampling 2 -> 1-, 2+
+  digitalWrite(TDS_SOURCE_1, LOW);
+  digitalWrite(TDS_SOURCE_2, HIGH);
+  x2 = analogRead(TDS_INPUT);
+
+  // idle
+  digitalWrite(TDS_SOURCE_1, LOW);
+  digitalWrite(TDS_SOURCE_2, LOW);
+
+  r = (x1 + 1) / (1024 - x1) + (1024 - x2) / (x2 + 1);
+  return C1 + C2 / r;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // set mode pin (2 - 9) sebagai output
+  byte i;
+  for (i = 0; i < sizeof(outputPins); i++) {
+    pinMode(outputPins[i], OUTPUT);
+  }
+
+  pinMode(TDS_SOURCE_1, OUTPUT);
+  pinMode(TDS_SOURCE_2, OUTPUT);
+
+  // kalibrasi waktu
+  RTC.readClock();
+  count = RTC.getSeconds();
+
+  TIMER_SIZE = sizeof(TTimer);
+  TIMER_COUNT = EEPROM.length() / TIMER_SIZE;
+}
+
+void loop() {
+  byte i;
+  processCommand();
+  //processKeypad();
+
+  if (count % 60 == 0) {
+    // matikan state yg durasinya sudah habis
+    for (i = 0; i < sizeof(outputPins); i++) {
+      if (timerDurations[i] > 0) {
+        timerDurations[i]--;
+        if (timerDurations[i] == 0) {
+          digitalWrite(outputPins[i], LOW);
+          Serial.print("OFF ");
+          Serial.println(i);
+        }
+      }
+    }
+    processTimer();
+  }
+  if (count >= 3600) { // kalibarsi detik
+    RTC.readClock();
+    count = RTC.getSeconds();
+  }
+  count++;
 }
 
