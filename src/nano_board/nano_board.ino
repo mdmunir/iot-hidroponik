@@ -62,6 +62,7 @@
 #define TDS_SOURCE_2 3
 #define TDS_INPUT A0
 #define TIMER_ADDRESS 64
+
 #define POMPA 0
 #define VALVE 1
 
@@ -163,16 +164,21 @@ class TSerialProcess {
       int i = s.indexOf(':');
       TSerialCommand *sc = _first;
       if (i > 0) {
-        cmd = s.substring(0, i - 1);
+        cmd = s.substring(0, i);
         content = s.substring(i + 1);
-        while (sc) {
-          if (sc->process(cmd, content)) {
-            return;
-          } else {
-            sc = sc->next();
-          }
+      } else {
+        cmd = s;
+        content = "";
+      }
+      while (sc) {
+        if (sc->process(cmd, content)) {
+          return;
+        } else {
+          sc = sc->next();
         }
       }
+      Serial.print("Unknown command: ");
+      Serial.println(s);
       if (_customProcess) {
         _customProcess(s);
       }
@@ -407,15 +413,14 @@ TEepromTimer eepromTimer(TIMER_ADDRESS, processTimer);
 TSerialProcess serialProcess;
 
 /**
- * Konfigurasi pin/relay
- * 5 -> pompa 
- * 6 -> seleoid valve
- * 
- * Untuk PULL PUSH tds sensor menggunakan pin 2 dan 3
- */
-byte outputPins[] = {5, 6, 7, 8}; // pin ke relay
-long timerDurations[] = {0, 0, 0, 0};
-byte PIN_COUNT;
+   Konfigurasi pin/relay
+   5 -> pompa
+   6 -> seleoid valve
+
+   Untuk PULL PUSH tds sensor menggunakan pin 2 dan 3
+*/
+byte relays[] = {5, 6, 7, 8}; // pin ke relay
+long durations[] = {0, 0, 0, 0};
 char formatted[] = "00-00-00 00:00:00x";
 int ppmNutrisi = 1000;
 
@@ -428,18 +433,18 @@ long milis, lastMilis = 0;
 
 void processTimer(unsigned int action) {
   byte a = action >> 8, duration = action % 256;
-  setStatePin(a % 8, a >> 3, duration * 60);
+  setStateRelay(a % 8, a >> 3, duration * 60);
 }
 
-void setStatePin(byte x, boolean state, int durasi) {
-  digitalWrite(outputPins[x], state);
+void setStateRelay(byte x, boolean state, int durasi) {
+  digitalWrite(relays[x], state);
   if (state) {
-    if (durasi > timerDurations[x] || durasi == 0) {
-      timerDurations[x] = durasi;
+    if (durasi > durations[x] || durasi == 0) {
+      durations[x] = durasi;
     }
     Serial.print("ON ");
   } else {
-    timerDurations[x] = 0;
+    durations[x] = 0;
     Serial.print("OFF ");
   }
   Serial.println(x);
@@ -497,11 +502,11 @@ void switchPin(String s) {
   boolean state;
   if (c >= '0' && c <= '7') {
     x = c - '0';
-    state = (action == '1') || (action == 'x' && !digitalRead(outputPins[x]));
+    state = (action == '1') || (action == 'x' && !digitalRead(relays[x]));
     if (i < s.length() - 1) {
       durasi = getIntFromStr(s, i);
     }
-    setStatePin(x, state, durasi * 60);
+    setStateRelay(x, state, durasi * 60);
   }
 }
 
@@ -514,7 +519,7 @@ void addTimer(String s) {
   unsigned int u;
   String s1, s2;
   if (sp > 0) {
-    s1 = s.substring(0, sp - 1);
+    s1 = s.substring(0, sp);
     s2 = s.substring(sp + 2);
     s1.trim();
     s2.trim();
@@ -539,7 +544,7 @@ void editTimer(String s) {
   unsigned int u;
   String s1, s2, sa;
   if (sp > 0) {
-    s1 = s.substring(0, sp - 1);
+    s1 = s.substring(0, sp);
     s2 = s.substring(sp + 2);
     s1.trim();
     s2.trim();
@@ -622,22 +627,22 @@ void tds(String s) {
   Serial.println(x);
 }
 
-void setPPM(String s){
+void setPPM(String s) {
   unsigned int inp;
-  int i=0;
+  int i = 0;
   inp = getIntFromStr(s, i);
-  if(inp >= 500 && inp <= 3000){
+  if (inp >= 500 && inp <= 3000) {
     ppmNutrisi = inp;
     inp += TIMER_VALID << 12;
     EEPROM.put(0, inp);
   }
 }
 
-void tambahNutrisiOtomatis(){
+void tambahNutrisiOtomatis() {
   int x = (int) samplingTds();
   int K = 10; // --> didapat dari percobaan
-  if(x < ppmNutrisi){
-    setStatePin(VALVE, true, (ppmNutrisi - x) * K);
+  if (x < ppmNutrisi) {
+    setStateRelay(VALVE, true, (ppmNutrisi - x) * K);
   }
 }
 
@@ -648,18 +653,20 @@ void tambahNutrisiOtomatis(){
 void setup() {
   byte i;
   unsigned int inp;
-  
-  PIN_COUNT = sizeof(outputPins);
+
   Serial.begin(115200);
 
   // set mode sebagai output
-  for (i = 0; i < PIN_COUNT; i++) {
-    pinMode(outputPins[i], OUTPUT);
+  for (i = 0; i < sizeof(relays); i++) {
+    pinMode(relays[i], OUTPUT);
   }
+
+  pinMode(TDS_SOURCE_1, OUTPUT);
+  pinMode(TDS_SOURCE_2, OUTPUT);
 
   // ambil konfig ppm dari eeprom
   EEPROM.get(0, inp);
-  if(inp >> 12 == TIMER_VALID){
+  if (inp >> 12 == TIMER_VALID) {
     ppmNutrisi = (inp << 4) >> 4;
   }
 
@@ -691,11 +698,11 @@ void loop() {
 
   if (milis != lastMilis) { // ganti detik
     lastMilis = milis;
-    for (x = 0; x < PIN_COUNT; x++) {
-      if (timerDurations[x] > 0) {
-        timerDurations[x]--;
-        if (timerDurations[x] == 0) {
-          digitalWrite(outputPins[x], LOW);
+    for (x = 0; x < sizeof(relays); x++) {
+      if (durations[x] > 0) {
+        durations[x]--;
+        if (durations[x] == 0) {
+          digitalWrite(relays[x], LOW);
         }
       }
     }
@@ -705,11 +712,11 @@ void loop() {
 
       // hard coded timer
       // POMPA tiap 1 jam nyala selama 3 menit
-      if(currentTime.i == 0){
-        setStatePin(POMPA, true, 3*60);
+      if (currentTime.i == 0) {
+        setStateRelay(POMPA, true, 3 * 60);
       }
       // cek nutrisi setelah selesai pengairan
-      if(currentTime.i == 4){
+      if (currentTime.i == 4) {
         tambahNutrisiOtomatis();
       }
     }

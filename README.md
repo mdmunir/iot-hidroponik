@@ -1,44 +1,29 @@
 # iot-hidroponik
-Projek iot untuk hidroponik.
+Projek iot untuk hidroponik menggunakan Wemos D1 R3.
 
 # Wiring
-* Arduino nano dihubungkan dengan RTC1307 lewat I2C. Port `A4` arduino ke port `SDA` RTC dan port `A5` arduino ke port `SCL` RTC.
-* Arduino ke `keypad 4x4` dihubungkan lewat port `2` sampai `9`.
-* Arduino ke relay dihubungkan lewat port `10`, `11`, `12`, `13`, `A0`, `A1`, `A2` dan `A3`.
-* Arduino ke wemos dihubungkan lewat port serial. Kecepatan yang digunakan adalah `115200`.
+* Board dihubungkan dengan RTC1307 lewat I2C.
+* Board ke `SD Card Shield` lewat koneksi `SPI` (MISO, MOSI, SCK, SS).
+* Relay yang dipakai hanya dua yaitu untuk menyalakan pompa dan selenoid valve. Relay dihubungkan lewat port `D3` dan `D4`.
+* Untuk sensor tds menggunakan 3 pin yaitu `SDA`, `SCL` dan `A0`. Ide dasarnya dari [sini](https://hackaday.io/project/7008-fly-wars-a-hackers-solution-to-world-hunger/log/24646-three-dollar-ec-ppm-meter-arduino) dengan modifikasi sana sini :D
+![sensor](img/tds-sensor.jpg)
 
-# Arduino `command`
-Sistem dapat diprogram dengan mengirimkan perintah ke arduino lewat serial port. Perintah yang bisa dilakukan misalnya adalah menghidpukan dan mematikan relay. Tambah, hapus, ubah timer. Men-set waktu dari `RTC` dan lain-lain.
 
-* Untuk mengatur waktu adalah dengan mengirim perintah
-    tYYMMDD-HHIISS --> Contoh t170809-073426 mengatur waktu ke 09/08/2017 07:34:26
-* Untuk mendapatkan waktu sekarang adalah dengan mengirim perintah n.
-* Untuk menyalahkan/mematikan relay
-       1P[DURASI] --> P adalah no relay(0-7). Durasi adalah opsional. Contoh 15100 : menyalahkan relay 5 selama 100 menit
-       0P --> Contoh 05 : mematikan relay 5
-       xP[DURASI] --> Menukar state dari relay. Jika state sekarang adalah ON, durasi akan dipakai.
-* Menambah atau mengubah timer.
-   -Menambah timer.
-       aCPIIHHDDMMYYW[DURASI] --> C adalah action ('0' atau '1').
-                                P adalah no relay (0 - 7).
-                                IIHHDDMMYY adalah menit, jam, tanggal, bulan dan tahun. Jika angka maka harus 2 digit atau karakter
-                                W adalah hari ke dalam seminggu (0-6 atau *).
-                                Contoh a150007****10 -> nyalakan relay 5 pada jam 7 menit ke 0 setiap hari(bulan dan tahun) selama 10 menit.
-
-   -Update timer
-       eA:CPIIHHDDMMYYW[DURASI] --> A adalah index timer yang akan diedit. Contoh e15:150507****10 -> edit timer ke 15 menjadi nyalakan relay pada jam 7 menit ke 5
-                                  setiap hari(bulan dan tahun) selama 10 menit.
-
-   -Delete timer
-       dA                       --> A adalah index timer. Contoh d15 -> delete timer ke 15.
-* Untuk mendapatkan daftar timer adalah dengan mengirim perintah l.
-* Untuk melihat state pin menggunakan perintah s. Untuk detail state perintahnya adalah S.
-
-Jika arduino terhubung dengan wemos dan jaringan. Perintah yang sama dapat juga dikirimkan lewat url `/serial?cmd=isi_command`.
-
-# Wemos `command`
+# Serial `command`
 Wemos sendiri dapat diprogram lewat serial port. Perintah-perintah yang tersedia adalah
 
-* Mengganti nama `SSID` dan `password` untuk wifi. Commandnya adalah `sNAMA_SSID` dan `pPASSWORD`. Command `SNAMA_SSID` dan `PPASSWORD` akan sekaligus menyimpan nilainya dalam EEPROM.
-* State dari port dapat dirubah lewat command `1`, `0` dan `x`. 
+* ssid:<SSID>:<PASSWORD>  => Digunakan untuk mengganti koneksi wifi. Contoh ssid:cakmunir:rahasia
+* ip => Mendapatkan IP address dari wemos
+* tds => Membaca nilai kepekatan larutan
+* now => Membaca waktu sekarang dari RTC
+* set_time:<FORMAT> => Menset waktu dari RTC module. Format yang dipakai adalah "YY-MM-DD HH:ii:SS [W]". Contoh set_time:17-09-05 11:34:26 2
+* konfig:<VALUES> => Menset nilai dari beberapa pengaturan antara lain ppm, periode pompa, durasi nyala pompa. Contoh konfig:p1200;t30;d5 -> menset kepekatan larutan menadi 1200 ppm, periode nyala pompa 30 menit serta durasi pompa 5 menit.
+
+# Kalibrasi tds meter
+
+1. Set nilai `C0` = `0.0` dan `C1` = `1.0` pada fungsi `getTds()`.
+1. Celupkan probe pada larutan yang sudah diketahui konsentrasinya.
+1. Ketik tds di serial monitor, catat angka yang muncul.
+1. Ulangi langkah 2 dan 3 pada larutan yang berbeda-beda konsentrasinya.
+1. Dari angka-angka tersebut kemudian di`regresi`kan untuk mendapatkan nilai `C0` dan `C2`.
 

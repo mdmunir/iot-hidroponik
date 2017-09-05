@@ -554,24 +554,24 @@ void kalibrasiTime() {
 }
 
 float samplingTds() {
-  float x1, x2, r;
+  float x1, x2, ec;
   float C1 = 0.0, C2 = 1000.0;
   // sampling 1 -> 1+, 2-
   digitalWrite(TDS_SOURCE_1, HIGH);
   digitalWrite(TDS_SOURCE_2, LOW);
-  x1 = analogRead(A0);
+  x1 = 1.0 * analogRead(A0) / 1023;
 
   // sampling 2 -> 1-, 2+
   digitalWrite(TDS_SOURCE_1, LOW);
   digitalWrite(TDS_SOURCE_2, HIGH);
-  x2 = analogRead(A0);
+  x2 = 1 - 1.0 * analogRead(A0) / 1023;
 
   // idle
   digitalWrite(TDS_SOURCE_1, LOW);
   digitalWrite(TDS_SOURCE_2, LOW);
 
-  r = (x1 + 1) / (1024 - x1) + (1024 - x2) / (x2 + 1);
-  return C1 + C2 / r;
+  ec = x1 / (1 - x1) + x2 / (1 - x2);
+  return C1 + C2 * ec;
 }
 
 
