@@ -19,7 +19,7 @@
 
 
   >>Tambahan: Fungsi `initBlynk()` di definisikan dalam file lain. Tambah new tab, isi nama file denga "token". Lalu isi file tersebut dengan code berikut
-  
+
   #include <ESP8266WiFi.h>
   #include <BlynkSimpleEsp8266.h>
 
@@ -186,7 +186,7 @@ TSchedule schedules[24];
 //                     MAIN FUNCTION
 /* ******************************************************* */
 void setup(void) {
-  byte x, check;
+  byte x;
   int i, ppm;
   TSchedule sch;
   Serial.begin(115200);
@@ -241,9 +241,6 @@ void setup(void) {
   }
   initBlynk();
 
-  // send info to blynk
-  ppm = (int)getTds();
-  Blynk.virtualWrite(PPM_VALUE_PIN, ppm);
   Blynk.virtualWrite(PPM_KONFIG_PIN, konfigPpm);
 }
 
@@ -254,7 +251,7 @@ void loop ( void ) {
   byte x;
   TSchedule sch;
   int ppm;
-  int jam, menit;
+  int jam, menit, m, MAX_MENIT = 24 * 60;
   long current = millis();
 
   serialProcess.processCommand();
@@ -265,7 +262,7 @@ void loop ( void ) {
     jam = hour();
     menit = minute();
 
-    if (prevMenit != menit) { // hanya jika ganti menit
+    if (prevMenit != menit) {
       prevMenit = menit;
       sch = schedules[jam];
       if (sch.durasi > 0 && sch.menit == menit) {
@@ -662,7 +659,7 @@ float getTds() {
   return C1 + C2 * ec;
 }
 
-void relayOn(byte relay, unsigned duration, unsigned int after) {
+void relayOn(byte relay, unsigned int duration, unsigned int after) {
   if (after == 0) {
     relays[relay].after = 0;
     digitalWrite(relays[relay].pin, HIGH);
@@ -695,7 +692,7 @@ void nutrisiOtomatis() {
   int P = 4000; // kepekatan larutan tambahan
   float K = 100.0, duration = 0; // dari percobaan
 
-  nextNutrisi = 0; //
+  nextNutrisi = 0; // tunggu schedule berikutnya
   if (x < konfigPpm) { // jika nutrisinya kurang
     duration = K * (konfigPpm - x) / (P - konfigPpm);
     if (duration > 60) {
@@ -708,7 +705,7 @@ void nutrisiOtomatis() {
 }
 
 void pompaOn(int duration) {
-  nextNutrisi = millis() + (duration < 300 ? duration : 300) * 1000; // tambah nutrisi setelah pompa mati
+  nextNutrisi = millis() + (duration < 180 ? duration : 180) * 1000; // tambah nutrisi setelah pompa mati
   relayOn(rPompa1, duration, 0);
 }
 
