@@ -11,11 +11,11 @@
   - timers => Menampilkan daftar skedule yang tersimpan.
 
   Fungsi-fungsi pin
-  - 0 dan 1 (RX dan TX) Dicadangkan untuk komunikasi serial.
-  - 2 dan 3 untuk source sensor tds (Baca readme)
+  - RX dan TX Dicadangkan untuk komunikasi serial.
+  - D3 dan D4 untuk source sensor tds (Baca readme)
   - A0 untuk input sensor tds.
-  - 4, 5, 6, 7 terhubung dengan relay (4 valve, 5 pompa, 6 dan 7 dicadangkan untuk nanti)
-  - A4 dan A5 (SDA dan SCL) terhubung dengan modul RTC
+  - D5, D6, D7, D8 terhubung dengan relay (D5 valve, D6 pompa, D7 dan D8 dicadangkan untuk nanti)
+  - SDA dan SCL (D1 dan D2) terhubung dengan modul RTC
 
 
   >>Tambahan: Fungsi `initBlynk()` di definisikan dalam file lain. Tambah new tab, isi nama file denga "token". Lalu isi file tersebut dengan code berikut
@@ -35,7 +35,8 @@
     Blynk.connect();
   }
 
-  
+  -----------------
+  Program ini memnggunakan library Blynk. Baca cara instalnya di http://www.blynk.cc/
 */
 
 #include <RealTimeClockDS1307.h>
