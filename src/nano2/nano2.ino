@@ -1,7 +1,5 @@
 /**
   Serial command adalah perintah untuk wemos yang dikirimkan dari serial port (serial monitor). Berikut beberapa perintah yang tersedia
-  - ssid:<SSID>:<PASSWORD>  => Digunakan untuk mengganti koneksi wifi. Contoh ssid:cakmunir:rahasia
-  - ip => Mendapatkan IP address dari wemos
   - tds => Membaca nilai kepekatan larutan
   - now => Membaca waktu sekarang dari RTC
   - set_time:<FORMAT> => Menset waktu dari RTC module. Format yang dipakai adalah "YY-MM-DD HH:ii:SS [W]". Contoh set_time:17-09-05 11:34:26 2
@@ -20,13 +18,10 @@
 
 #include <RealTimeClockDS1307.h>
 #include <EEPROM.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
 
 #define SCH_ADDRS 10
-#define TDS_SOURCE_1 D3
-#define TDS_SOURCE_2 D4
+#define TDS_SOURCE_1 2
+#define TDS_SOURCE_2 3
 
 
 /* *************************************************** */
@@ -121,7 +116,6 @@ class TSerialProcess {
 };
 
 
-
 /* *************************************************** */
 //              GLOBAL VAR
 /* *************************************************** */
@@ -148,14 +142,13 @@ struct {
 } currentTime;
 
 
-ESP8266WebServer server(80);
 TSerialProcess serialProcess;
 
 TState relays[] = {
-  {D5, 0, 0},
-  {D6, 0, 0},
-  {D7, 0, 0},
-  {D8, 0, 0}
+  {4, 0, 0},
+  {5, 0, 0},
+  {6, 0, 0},
+  {7, 0, 0}
 };
 char formatted[] = "00-00-00 00:00:00x";
 long seconds, lastSeconds = 0;
@@ -169,10 +162,10 @@ TSchedule schedules[24];
 /* ******************************************************* */
 void setup(void) {
   byte x;
-  int i, ppm;
+  int ppm;
   TSchedule sch;
   Serial.begin(115200);
-  EEPROM.begin(64);
+  EEPROM.begin();
 
   // set mode output untuk tds sensor
   for (x = 0; x < 4; x++) {
@@ -181,36 +174,12 @@ void setup(void) {
   pinMode(TDS_SOURCE_1, OUTPUT);
   pinMode(TDS_SOURCE_2, OUTPUT);
 
-  serialProcess.addCommand("ssid", setSsidPass);
-  serialProcess.addCommand("ip", getIp);
   serialProcess.addCommand("tds", samplingTds);
   serialProcess.addCommand("now", getTimeNow);
   serialProcess.addCommand("set_time", setTimeNow);
-  serialProcess.addCommand("pins", getPinStates);
-  serialProcess.addCommand("test", testTds);
   serialProcess.addCommand("ppm", setPpm);
-  serialProcess.addCommand("analog", readAnalog);
   serialProcess.addCommand("timer", setTimer);
   serialProcess.addCommand("timers", getTimers);
-
-  i = 0;
-  while (WiFi.status() != WL_CONNECTED && i < 30) { // 30 detik
-    serialProcess.processCommand();
-    delay (1000);
-    i++;
-  }
-
-  if (MDNS.begin("esp8266")) {
-    // do something
-  }
-
-  server.on("/", handleRoot );
-  server.on("/tds", handleReadTds);
-  server.on("/config", handleConfig);
-  server.on("/timer", handleTimer);
-
-  server.onNotFound(handleNotFound);
-  server.begin();
 
   // current time
   currentTime.y = 255;
@@ -249,8 +218,6 @@ void setup(void) {
 void loop ( void ) {
   byte x;
   TSchedule sch;
-  String txt;
-  server.handleClient();
   serialProcess.processCommand();
 
   seconds = millis() / 1000;
@@ -282,58 +249,6 @@ void loop ( void ) {
   }
 }
 
-
-/* ******************************************************* */
-//                     WIFI SERVICE FUNCTION
-/* ******************************************************* */
-
-String msgInfo = "  /tds\n  /pompa?cmd=(1|0|x|r)&duration=duration\n  /config?ppm=ppm  /timer?cmd=timer";
-void handleRoot() {
-  String message = "Hidroponik system by Cak Munir\n\n";
-
-  server.send (200, "text/plain", message + msgInfo);
-}
-
-void handleNotFound() {
-  String message = "File Not Found\n\n";
-
-  server.send (404, "text/plain", message + msgInfo);
-}
-
-void handleReadTds() {
-  server.send(200, "text/plain", String(getTds()));
-}
-
-void handleConfig() {
-  int ppm;
-  if (server.hasArg("ppm")) {
-    ppm = server.arg("ppm").toInt();
-    if (ppm >= 500 && ppm <= 2500) {
-      konfigPpm = ppm;
-      EEPROM.put(0, konfigPpm);
-      EEPROM.commit();
-    }
-  }
-  server.send(200, "text/plain", "ppm=" + String(konfigPpm));
-}
-
-void handleTimer() {
-  String s1, s2;
-  int p;
-  s1 = server.arg("cmd");
-  while (s1.length() > 0) {
-    p = s1.indexOf(';');
-    if (p > 0) {
-      s2 = s1.substring(0, p);
-      s1 = s1.substring(p + 1);
-    } else {
-      s2 = s1;
-      s1 = "";
-    }
-    setTimer(s2);
-  }
-  server.send(200, "text/plain", _getTimers());
-}
 
 
 /* ******************************************************* */
@@ -381,40 +296,6 @@ void setTimeNow(String s) {
   Serial.println("Done setting time");
 }
 
-void setSsidPass(String s) {
-  char ssid[40], pass[40];
-  int i = s.indexOf(':');
-  if (i >= 0) {
-    s.substring(0, i).toCharArray(ssid, 40);
-    s.substring(i + 1).toCharArray(pass, 40);
-    if (WiFi.status() == WL_CONNECTED) {
-      WiFi.disconnect();
-    }
-    WiFi.begin(ssid, pass);
-    for (i = 0; i < 10; i++) { // tunggu 10 detik
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.print("Connect to [");
-        Serial.print(ssid);
-        Serial.print("] Ip address: ");
-        Serial.println(WiFi.localIP());
-        break;
-      }
-      delay(1000);
-    }
-  }
-}
-
-void getIp(String s) {
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Connect to [");
-    Serial.print(WiFi.SSID());
-    Serial.print("] IP Address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("Not connected");
-  }
-}
-
 void samplingTds(String s) {
   float x = getTds();
   Serial.println(x);
@@ -425,7 +306,6 @@ void setPpm(String s) {
   if (inp >= 500 && inp <= 2500) {
     konfigPpm = inp;
     EEPROM.put(0, konfigPpm);
-    EEPROM.commit();
   }
   Serial.println(konfigPpm);
 }
@@ -453,88 +333,28 @@ void setTimer(String s) {
   sch.durasi = inp < 60 ? inp : 0;
   schedules[x] = sch;
   EEPROM.put(SCH_ADDRS + x * sizeof(sch), sch);
-  EEPROM.commit();
 }
 
-String _getTimers() {
-  String s = "";
+void getTimers(String s) {
   byte x;
   TSchedule sch;
   for (x = 0; x < 24; x++) {
     sch = schedules[x];
-    s += String(x) + ":";
-    s += (sch.menit < 60) ? String(sch.menit) : "0";
-    s += " -> ";
-    s += (sch.menit < 60 && sch.durasi > 0 && sch.durasi < 60) ? String(sch.durasi) : " OFF";
-    s += "\n";
-  }
-  return s;
-}
-
-void getTimers(String s) {
-  Serial.print(_getTimers());
-}
-
-void getPinStates(String s) {
-  byte pins[] = {D0, D1, D2, D3, D4, D5, D6, D7, D8};
-  byte pins2[] = {RX, TX, SCL, SDA, MISO, MOSI, SS, SCK};
-  String names[] = {"RX", "TX", "SCL", "SDA", "MISO", "MOSI", "SS", "SCK"};
-  byte x;
-  for (x = 0; x <= 8; x++) {
-    Serial.print(pins[x]);
-    Serial.print(" => D");
     Serial.print(x);
-    Serial.print(" : ");
-    Serial.println(digitalRead(pins[x]) ? '1' : '0');
+    Serial.print(':');
+    if (sch.menit < 60) {
+      Serial.print(sch.menit);
+    } else {
+      Serial.print('0');
+    }
+    Serial.print(" -> ");
+    if (sch.menit < 60 && sch.durasi > 0 && sch.durasi < 60) {
+      Serial.print(sch.durasi);
+    } else {
+      Serial.print(" OFF");
+    }
+    Serial.println();
   }
-  for (x = 0; x < sizeof(pins2); x++) {
-    Serial.print(pins2[x]);
-    Serial.print(" => ");
-    Serial.print(names[x]);
-    Serial.print(" : ");
-    Serial.println(digitalRead(pins2[x]) ? '1' : '0');
-  }
-}
-
-void testTds(String s) {
-  int a1, a2, i;
-  float f;
-
-  for (i = 0; i < 4; i++) {
-    digitalWrite(TDS_SOURCE_1, i % 2 == 0);
-    digitalWrite(TDS_SOURCE_2, i % 2 == 1);
-  }
-  // sampling 1 -> PIN1 high, PIN2 low
-  digitalWrite(TDS_SOURCE_1, HIGH);
-  digitalWrite(TDS_SOURCE_2, LOW);
-  a1 = analogRead(A0);
-
-  for (i = 0; i < 4; i++) {
-    digitalWrite(TDS_SOURCE_1, i % 2 == 1);
-    digitalWrite(TDS_SOURCE_2, i % 2 == 0);
-  }
-  // sampling 2 -> PIN1 low, PIN2 high
-  digitalWrite(TDS_SOURCE_2, HIGH);
-  digitalWrite(TDS_SOURCE_1, LOW);
-  a2 = analogRead(A0);
-
-  // idle
-  digitalWrite(TDS_SOURCE_1, LOW);
-  digitalWrite(TDS_SOURCE_2, LOW);
-
-  f = 1.0 * a1 / a2;
-  
-  Serial.print("A1 = ");
-  Serial.print(a1);
-  Serial.print(" | A2 = ");
-  Serial.print(a2);
-  Serial.print(" | tds = ");
-  Serial.print(f);
-  Serial.println();
-}
-
-void readAnalog(String s) {
-  Serial.println(analogRead(A0));
 }
 
 /* ******************************************************* */
@@ -639,6 +459,7 @@ float getTds() {
   digitalWrite(TDS_SOURCE_2, HIGH);
   digitalWrite(TDS_SOURCE_1, LOW);
   x2 = analogRead(A0) / 1023.0;
+
   // idle
   digitalWrite(TDS_SOURCE_1, LOW);
   digitalWrite(TDS_SOURCE_2, LOW);
@@ -679,7 +500,6 @@ void nutrisiOtomatis(int durasiPompa) {
   }
 
   if (durasiPompa > 0) {
-    // pompa 1
     relayOn(rPompa1, durasiPompa, 0);
     // pompa2
     // relayOn(rPompa2, durasiPompa, 1 * (durasiPompa + 1));

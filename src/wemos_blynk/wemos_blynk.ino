@@ -12,21 +12,49 @@
 
   Fungsi-fungsi pin
   - 0 dan 1 (RX dan TX) Dicadangkan untuk komunikasi serial.
-  - 2 dan 3 untuk source sensor tds
-  - A0 untuk input sensor tds
-  - 4, 5, 6, 7 terhubung dengan relay 
+  - 2 dan 3 untuk source sensor tds (Baca readme)
+  - A0 untuk input sensor tds.
+  - 4, 5, 6, 7 terhubung dengan relay (4 valve, 5 pompa, 6 dan 7 dicadangkan untuk nanti)
   - A4 dan A5 (SDA dan SCL) terhubung dengan modul RTC
+
+
+  >>Tambahan: Fungsi `initBlynk()` di definisikan dalam file lain. Tambah new tab, isi nama file denga "token". Lalu isi file tersebut dengan code berikut
+  
+  #include <ESP8266WiFi.h>
+  #include <BlynkSimpleEsp8266.h>
+
+  void initBlynk() {
+    char auth[] = "YourToken";
+    char ssid[] = "ssid-name";
+    char pass[] = "password";
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.begin(ssid, pass);
+      delay(500);
+    }
+    Blynk.config(auth);
+    Blynk.connect();
+  }
+
+  
 */
 
 #include <RealTimeClockDS1307.h>
-#include <EEPROM.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
+#include <BlynkSimpleEsp8266.h>
+#include <EEPROM.h>
+#include <TimeLib.h>
+#include <Time.h>
 
 #define SCH_ADDRS 10
 #define TDS_SOURCE_1 D3
 #define TDS_SOURCE_2 D4
+
+#define PPM_VALUE_PIN V0
+#define BUTTON_PIN V1
+#define PPM_KONFIG_PIN V2
+#define ADDED_PPM_PIN V3
+#define TIMER_PIN V4
+#define TERMINAL_PIN V5
 
 
 /* *************************************************** */
@@ -127,8 +155,8 @@ class TSerialProcess {
 /* *************************************************** */
 struct TState {
   byte pin;
-  int delay;
-  long duration;
+  long after;
+  long until;
 };
 enum TRelay {rValve, rPompa1, rPompa2, rPompa3};
 
@@ -136,19 +164,6 @@ struct TSchedule {
   byte menit, durasi;
 };
 
-struct {
-  byte y;
-  byte m;
-  byte d;
-  byte h;
-  byte i;
-  byte s;
-  byte w;
-  long last;
-} currentTime;
-
-
-ESP8266WebServer server(80);
 TSerialProcess serialProcess;
 
 TState relays[] = {
@@ -157,9 +172,11 @@ TState relays[] = {
   {D7, 0, 0},
   {D8, 0, 0}
 };
-char formatted[] = "00-00-00 00:00:00x";
-long seconds, lastSeconds = 0;
-int lastAddedNutrision;
+
+
+
+char formatted[32];
+unsigned long prevMenit = 0, prevMillis = 0, prevTime = 0, nextReconnect = 0, nextNutrisi = 0, nextSchedule = 0, nextTds = 0;
 boolean rtcValid = false;
 int konfigPpm;
 TSchedule schedules[24];
@@ -168,11 +185,11 @@ TSchedule schedules[24];
 //                     MAIN FUNCTION
 /* ******************************************************* */
 void setup(void) {
-  byte x;
+  byte x, check;
   int i, ppm;
   TSchedule sch;
   Serial.begin(115200);
-  EEPROM.begin(64);
+  EEPROM.begin(256);
 
   // set mode output untuk tds sensor
   for (x = 0; x < 4; x++) {
@@ -194,34 +211,14 @@ void setup(void) {
   serialProcess.addCommand("timers", getTimers);
 
   i = 0;
-  while (WiFi.status() != WL_CONNECTED && i < 30) { // 30 detik
+  i = 0;
+  while (WiFi.status() != WL_CONNECTED && i < 15) { // 15 detik
     serialProcess.processCommand();
     delay (1000);
     i++;
   }
 
-  if (MDNS.begin("esp8266")) {
-    // do something
-  }
-
-  server.on("/", handleRoot );
-  server.on("/tds", handleReadTds);
-  server.on("/config", handleConfig);
-  server.on("/timer", handleTimer);
-
-  server.onNotFound(handleNotFound);
-  server.begin();
-
-  // current time
-  currentTime.y = 255;
-  currentTime.m = 255;
-  currentTime.d = 255;
-  currentTime.h = 0;
-  currentTime.i = 0;
-  currentTime.s = 0;
-  currentTime.w = 255;
-  currentTime.last = millis() / 1000;
-  getCurrentTime();
+  setSyncProvider(synchronCurrentTime);
 
   // read config
   // ppm
@@ -241,6 +238,12 @@ void setup(void) {
       schedules[x].durasi = 0;
     }
   }
+  initBlynk();
+
+  // send info to blynk
+  ppm = (int)getTds();
+  Blynk.virtualWrite(PPM_VALUE_PIN, ppm);
+  Blynk.virtualWrite(PPM_KONFIG_PIN, konfigPpm);
 }
 
 /**
@@ -249,103 +252,137 @@ void setup(void) {
 void loop ( void ) {
   byte x;
   TSchedule sch;
-  String txt;
-  server.handleClient();
+  int ppm;
+  int jam, menit;
+  long current = millis();
+
   serialProcess.processCommand();
 
-  seconds = millis() / 1000;
-  if (seconds != lastSeconds) { // ganti detik
-    lastSeconds = seconds;
-    getCurrentTime();
+  // schedule dari eeprom
+  if (nextSchedule < current) {
+    nextSchedule = current + 1000;
+    jam = hour();
+    menit = minute();
 
-    // nyalakan atau matikan relay
-    for (x = 0; x < 4; x++) {
-      if (relays[x].delay > 0) {
-        relays[x].delay--;
-        if (relays[x].delay == 0) {
-          digitalWrite(relays[x].pin, HIGH);
-        }
-      } else if (relays[x].duration > 0) {
-        relays[x].duration--;
-        if (relays[x].duration == 0) {
-          digitalWrite(relays[x].pin, LOW);
-        }
-      }
-    }
-
-    if (seconds % 60 == 0) { // ganti menit
-      sch = schedules[currentTime.h];
-      if (sch.durasi > 0 && sch.menit == currentTime.i) {
-        nutrisiOtomatis(sch.durasi * 60);
+    if (prevMenit != menit) { // hanya jika ganti menit
+      prevMenit = menit;
+      sch = schedules[jam];
+      if (sch.durasi > 0 && sch.menit == menit) {
+        pompaOn(sch.durasi * 60);
       }
     }
   }
-}
 
-
-/* ******************************************************* */
-//                     WIFI SERVICE FUNCTION
-/* ******************************************************* */
-
-String msgInfo = "  /tds\n  /pompa?cmd=(1|0|x|r)&duration=duration\n  /config?ppm=ppm  /timer?cmd=timer";
-void handleRoot() {
-  String message = "Hidroponik system by Cak Munir\n\n";
-
-  server.send (200, "text/plain", message + msgInfo);
-}
-
-void handleNotFound() {
-  String message = "File Not Found\n\n";
-
-  server.send (404, "text/plain", message + msgInfo);
-}
-
-void handleReadTds() {
-  server.send(200, "text/plain", String(getTds()));
-}
-
-void handleConfig() {
-  int ppm;
-  if (server.hasArg("ppm")) {
-    ppm = server.arg("ppm").toInt();
-    if (ppm >= 500 && ppm <= 2500) {
-      konfigPpm = ppm;
-      EEPROM.put(0, konfigPpm);
-      EEPROM.commit();
+  // nyalakan atau matikan relay sesuai delay dan durasi
+  for (x = 0; x < 4; x++) {
+    if (relays[x].after > 0 && relays[x].after < current) {
+      digitalWrite(relays[x].pin, HIGH);
+      relays[x].after = 0;
+      if (x == rPompa1) {
+        Blynk.virtualWrite(BUTTON_PIN, HIGH);
+      }
+    } else if (relays[x].until > 0 && relays[x].until < current) {
+      digitalWrite(relays[x].pin, LOW);
+      relays[x].until = 0;
+      if (x == rPompa1) {
+        Blynk.virtualWrite(BUTTON_PIN, LOW);
+      }
     }
   }
-  server.send(200, "text/plain", "ppm=" + String(konfigPpm));
-}
 
-void handleTimer() {
-  String s1, s2;
-  int p;
-  s1 = server.arg("cmd");
-  while (s1.length() > 0) {
-    p = s1.indexOf(';');
-    if (p > 0) {
-      s2 = s1.substring(0, p);
-      s1 = s1.substring(p + 1);
+  // nyalakan selenoid valve
+  if (nextNutrisi > 0 && nextNutrisi <= current) {
+    nutrisiOtomatis();
+  }
+  if (nextReconnect > 0 && nextReconnect < current) {
+    if (WiFi.status() == WL_CONNECTED && !Blynk.connected()) {
+      Blynk.connect();
+    }
+
+    if (!Blynk.connected()) {
+      nextReconnect = current + 180 * 1000; // reconnect berikutnya 3 menit lagi
     } else {
-      s2 = s1;
-      s1 = "";
+      nextReconnect = 0;
     }
-    setTimer(s2);
   }
-  server.send(200, "text/plain", _getTimers());
+
+  // kirim info tds tiap 10 menit
+  if (nextTds < current) {
+    nextTds = current + 600 * 1000;
+    ppm = (int) getTds();
+    Blynk.virtualWrite(PPM_VALUE_PIN, ppm);
+  }
+
+  if (Blynk.connected()) {
+    Blynk.run();
+  } else if (nextReconnect == 0) {
+    nextReconnect = current + 60 * 1000; // jadwalkan reconect 1 menit lagi
+  }
 }
 
+
+/* ******************************************************* */
+//                     BLYNK FUNCTION
+/* ******************************************************* */
+BLYNK_CONNECTED() {
+  Blynk.syncAll();
+}
+
+BLYNK_WRITE(BUTTON_PIN)
+{
+  int val = param.asInt();
+  if (val) { // on
+    pompaOn(5 * 60); // nyala 5 menit
+  } else {
+    relayOff(rPompa1);
+  }
+}
+
+BLYNK_WRITE(PPM_KONFIG_PIN)
+{
+  int inp = param.asInt();
+  if (inp >= 500 && inp <= 2500) {
+    konfigPpm = inp;
+    EEPROM.put(0, konfigPpm);
+    EEPROM.commit();
+  }
+}
+
+BLYNK_WRITE(TIMER_PIN)
+{
+  TSchedule sch;
+  long inp = param.asLong();
+  int jam = inp / 10000, durasi;
+  inp = inp % 10000;
+
+  sch.menit = inp / 100;
+  durasi = inp % 100;
+  if (jam >= 0 && jam < 24 && sch.menit >= 0 && sch.menit < 60) {
+    sch.durasi = (durasi > 0 && durasi < 60) ? durasi : 0;
+    schedules[jam] = sch;
+    EEPROM.put(SCH_ADDRS + jam * sizeof(sch), sch);
+    EEPROM.commit();
+  }
+}
+
+BLYNK_WRITE(InternalPinRTC) {
+  const unsigned long DEFAULT_TIME = 1357041600; // Jan 1 2013
+  unsigned long blynkTime = param.asLong();
+
+  if (blynkTime >= DEFAULT_TIME) {
+    setTime(blynkTime);
+    rtcValid = true;
+    Serial.print("Server time: ");
+    Serial.println(blynkTime);
+  }
+}
 
 /* ******************************************************* */
 //                     SERIAL FUNCTION
 /* ******************************************************* */
 void getTimeNow(String s) {
-  RTC.readClock();
-  RTC.getFormatted(formatted);
-  Serial.print(formatted);
-  Serial.print(' ');
-  Serial.print(RTC.getDayOfWeek());
-  Serial.println();
+  snprintf(formatted, 32, "%d-%02d-%02d %02d:%02d:%02d %d", year(), month(), day(), hour(), minute(), second(), weekday());
+  Serial.println(formatted);
 }
 
 /*
@@ -377,7 +414,6 @@ void setTimeNow(String s) {
     RTC.setDayOfWeek(inp);
   }
   RTC.setClock();
-
   Serial.println("Done setting time");
 }
 
@@ -409,7 +445,9 @@ void getIp(String s) {
     Serial.print("Connect to [");
     Serial.print(WiFi.SSID());
     Serial.print("] IP Address: ");
-    Serial.println(WiFi.localIP());
+    Serial.print(WiFi.localIP());
+    Serial.print(" | ");
+    Serial.println(Blynk.connected() || Blynk.connect() ? "online" : "offline");
   } else {
     Serial.println("Not connected");
   }
@@ -426,6 +464,7 @@ void setPpm(String s) {
     konfigPpm = inp;
     EEPROM.put(0, konfigPpm);
     EEPROM.commit();
+    Blynk.virtualWrite(PPM_KONFIG_PIN, konfigPpm);
   }
   Serial.println(konfigPpm);
 }
@@ -454,6 +493,11 @@ void setTimer(String s) {
   schedules[x] = sch;
   EEPROM.put(SCH_ADDRS + x * sizeof(sch), sch);
   EEPROM.commit();
+  Serial.print(x);
+  Serial.print(':');
+  Serial.print(sch.menit);
+  Serial.print(" -> ");
+  Serial.println((sch.menit < 60 && sch.durasi > 0 && sch.durasi < 60) ? String(sch.durasi) : " OFF");
 }
 
 String _getTimers() {
@@ -523,7 +567,7 @@ void testTds(String s) {
   digitalWrite(TDS_SOURCE_2, LOW);
 
   f = 1.0 * a1 / a2;
-  
+
   Serial.print("A1 = ");
   Serial.print(a1);
   Serial.print(" | A2 = ");
@@ -557,62 +601,31 @@ int getIntFromStr(String ss, int &i) {
   return r;
 }
 
-void getCurrentTime() {
-  long t = millis() / 1000, selisih = t - currentTime.last, s, i, h;
-  byte months[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  byte lastDate;
-
-  s = currentTime.s + selisih;
-  i = currentTime.i + s / 60; // menit
-  h = currentTime.h + i / 60; // jam
-
+time_t synchronCurrentTime() {
+  tmElements_t tm;
+  time_t t;
   RTC.readClock();
-  if (RTC.getHours() < 24 && RTC.getMinutes() < 60 && RTC.getSeconds() < 60) {
-    currentTime.h = RTC.getHours();
-    currentTime.i = RTC.getMinutes();
-    currentTime.s = RTC.getSeconds();
-  } else {
-    currentTime.s = s % 60;
-    currentTime.i = i % 60;
-    currentTime.h = h % 24;
-  }
-
-  if (RTC.getYear() < 99 && RTC.getMonth() <= 12 && RTC.getDate() <= 31) { // RTC valid
-    currentTime.y = RTC.getYear();
-    currentTime.m = RTC.getMonth();
-    currentTime.d = RTC.getDate();
+  if (RTC.getHours() < 24 && RTC.getMinutes() < 60 && RTC.getSeconds() < 60 && RTC.getYear() < 99 && RTC.getMonth() <= 12 && RTC.getDate() <= 31) {
+    // rtcValid
+    tm.Year = RTC.getYear() + 30;
+    tm.Month = RTC.getMonth();
+    tm.Day = RTC.getDate();
+    tm.Hour = RTC.getHours();
+    tm.Minute = RTC.getMinutes();
+    tm.Second = RTC.getSeconds();
+    t = makeTime(tm);
     rtcValid = true;
-  } else {
-    if (h >= 24) { // ganti hari
-      if (currentTime.m == 2 && currentTime.y % 4 == 0) { // kabisat
-        lastDate = 29;
-      } else {
-        lastDate = months[currentTime.m];
-      }
-      if (currentTime.d < lastDate) {
-        currentTime.d++;
-      } else {
-        currentTime.d = 1;
-        if (currentTime.m == 12) {
-          currentTime.m = 1;
-          currentTime.y++;
-        } else {
-          currentTime.m++;
-        }
-      }
-    }
+    return t;
+  } else if (!rtcValid) {
+    Blynk.sendInternal("rtc", "sync");
   }
-
-  if (RTC.getDayOfWeek() <= 7) {
-    currentTime.w = RTC.getDayOfWeek();
-  }
-  currentTime.last = t;
+  return 0;
 }
 
 float getTds() {
   // konstanta diperoleh dari percobaan. Hasil dari fungsi ini dibandingkan dengan tds meter standar. Hasilnya diregresikan
   // Baca README.md
-  float C1 = 27.0, C2 = 61.4; // <- dari regresi linier, mungkin berbeda tergantung nilai R yg dipakai
+  float C1 = -15.0, C2 = 620.0; // <- dari regresi linier, mungkin berbeda tergantung nilai R yg dipakai
   float x1, x2, ec;
   int i;
 
@@ -648,41 +661,53 @@ float getTds() {
   return C1 + C2 * ec;
 }
 
-void relayOn(byte relay, long duration, int after) {
-  relays[relay].delay = after;
+void relayOn(byte relay, unsigned duration, unsigned int after) {
   if (after == 0) {
+    relays[relay].after = 0;
     digitalWrite(relays[relay].pin, HIGH);
+    if (relay == rPompa1) {
+      Blynk.virtualWrite(V1, HIGH);
+    }
+  } else {
+    relays[relay].after = millis() + after * 1000;
   }
-  relays[relay].duration = duration;
+  relays[relay].until = (duration == 0) ? 0 : millis() + (after + duration) * 1000;
 }
 
 void relayOff(byte relay) {
   digitalWrite(relays[relay].pin, LOW);
-  relays[relay].duration = 0;
-  relays[relay].delay = 0;
+  relays[relay].until = 0;
+  relays[relay].after = 0;
+  if (relay == rPompa1) {
+    Blynk.virtualWrite(V1, LOW);
+  }
 }
 
 /*
    Jika kepekatan larutan kurang dari yang diharapkan.
    Selenoid valve akan dibuka selama waktu yang sebanding dengan kekurangannya.
 */
-void nutrisiOtomatis(int durasiPompa) {
-  int x = (int) getTds(), duration;
+void nutrisiOtomatis() {
+  long t = now(), selisih = t - prevTime;
+  prevTime = t;
+  float x = getTds();
   int P = 4000; // kepekatan larutan tambahan
-  float K = 100.0; // dari percobaan
-  if (x < konfigPpm) { // jika nutrisinya kurang
-    duration = (int)(K * (konfigPpm - x) / (P - konfigPpm));
-    lastAddedNutrision = duration;
-    relayOn(rValve, duration < 60 ? duration : 60, 0);
-  } else {
-    lastAddedNutrision = 0;
-  }
+  float K = 100.0, duration = 0; // dari percobaan
 
-  if (durasiPompa > 0) {
-    // pompa 1
-    relayOn(rPompa1, durasiPompa, 0);
-    // pompa2
-    // relayOn(rPompa2, durasiPompa, 1 * (durasiPompa + 1));
+  nextNutrisi = 0; //
+  if (x < konfigPpm) { // jika nutrisinya kurang
+    duration = K * (konfigPpm - x) / (P - konfigPpm);
+    if (duration > 60) {
+      duration = 60;
+    }
+    relayOn(rValve, (int)duration, 0);
   }
+  Blynk.virtualWrite(V0, x); // nilai ppm
+  Blynk.virtualWrite(V3, 1000 * duration / selisih);
+}
+
+void pompaOn(int duration) {
+  nextNutrisi = millis() + (duration < 300 ? duration : 300) * 1000; // tambah nutrisi setelah pompa mati
+  relayOn(rPompa1, duration, 0);
 }
 
