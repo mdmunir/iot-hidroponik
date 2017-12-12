@@ -63,6 +63,11 @@
 //              CLASS PROCESS SERIAL
 /* *************************************************** */
 
+unsigned long detik() {
+  return millis() / 1000;
+}
+
+
 WidgetTerminal terminal(TERMINAL_PIN);
 WidgetRTC rtc;
 
@@ -195,14 +200,14 @@ class TRelay {
       _vpin = vpin;
     }
     void run() {
-      if (_after > 0 && _after < millis()) {
+      if (_after > 0 && _after < detik()) {
         _after = 0;
         digitalWrite(_pin, HIGH);
         if (_vpin) {
           Blynk.virtualWrite(_vpin, HIGH);
         }
       }
-      if (_until > 0 && _until < millis()) {
+      if (_until > 0 && _until < detik()) {
         _until = 0;
         digitalWrite(_pin, LOW);
         if (_vpin) {
@@ -212,13 +217,13 @@ class TRelay {
     }
 
     void on(unsigned int durasi, unsigned int after) {
-      _after = millis() + after * 1000;
-      _until = (durasi > 0) ? millis() + (after + durasi) * 1000 : 0;
+      _after = detik() + after;
+      _until = (durasi > 0) ? detik() + (after + durasi) : 0;
     }
 
     void on(unsigned int durasi) {
       _after = 0;
-      _until = (durasi > 0) ? millis() + durasi * 1000 : 0;
+      _until = (durasi > 0) ? detik() + durasi : 0;
 
       digitalWrite(_pin, HIGH);
       if (_vpin) {
@@ -238,6 +243,47 @@ class TRelay {
     boolean state() {
       return digitalRead(_pin);
     }
+
+    String status() {
+      String s = "";
+      long t;
+      if (digitalRead(_pin)) {
+        s += "ON";
+        t = _until - detik();
+      } else {
+        s += "OFF";
+        t = _after - detik();
+      }
+      if (t > 0) {
+        s += " -> " + String(t / 60) + ":" + String(t % 60);
+      }
+      return s;
+    }
+};
+
+class TPushButton {
+  private:
+    byte _pin;
+    long _time;
+  public:
+    TPushButton(byte pin) {
+      _pin = pin;
+      pinMode(_pin, INPUT_PULLUP);
+      _time = 0;
+    }
+    boolean pushed() {
+      if (!digitalRead(_pin) && (_time < millis() || _time > millis() + 10000)) {
+        _time = millis();
+        while (!digitalRead(_pin)) {
+          if (millis() - _time > 50) {
+            _time = millis() + 5000; // 5 detik
+            return true;
+          }
+          delay(5);
+        }
+      }
+      return false;
+    }
 };
 
 /* *************************************************** */
@@ -252,6 +298,7 @@ struct TConfig {
 TProcess process;
 TConfig konfig;
 TRelay valve(D5), pompa1(D6, BUTTON_PIN);
+TPushButton button1(D4);
 
 /* ******************************************************* */
 //                     MAIN FUNCTION
@@ -264,7 +311,6 @@ void setup(void) {
 
   pinMode(TDS_SOURCE_1, OUTPUT);
   pinMode(TDS_SOURCE_2, OUTPUT);
-  pinMode(PUSH_BUTTON, INPUT_PULLUP);
 
   process.addCommand("ssid", setSsidPass);
   process.addCommand("ip", getIp);
@@ -276,12 +322,12 @@ void setup(void) {
   process.addCommand("durasi", setDurasi);
   process.addCommand("analog", readAnalog);
   process.addCommand("on", setPompaOn);
-  process.addCommand("sync", synchronData);
+  process.addCommand("status", getStatusPompa);
 
   i = 0;
-  while (WiFi.status() != WL_CONNECTED && i < 15) { // 15 detik
+  while (WiFi.status() != WL_CONNECTED && i < 25) { // 2.5 detik
     process.processSerial();
-    delay (1000);
+    delay (100);
     i++;
   }
 
@@ -305,7 +351,6 @@ void loop(void) {
   handlePushButton();
   handleSchedule();
   handleRelays();
-  handleSynchron();
   handleNutrisi();
 
   if (Blynk.connected()) {
@@ -327,7 +372,7 @@ BLYNK_WRITE(BUTTON_PIN)
 {
   int val = param.asInt();
   if (val) { // on
-    pompaOn(konfig.durasi < 120 ? konfig.durasi : 120); // nyala 1 menit
+    pompa1On(konfig.durasi < 120 ? konfig.durasi : 120); // nyala 1 menit
   } else {
     pompa1.off();
   }
@@ -372,26 +417,13 @@ BLYNK_WRITE(TERMINAL_PIN)
 //                     LOOP FUNCTION
 //* ******************************************************* */
 
-boolean prevPushState = false;
-long prevPushTime = 0;
 void handlePushButton() {
-  boolean pushed = !digitalRead(PUSH_BUTTON);
-  if (pushed) {
-    if (prevPushState) { // pushed
-      if (millis() - prevPushTime > 50) {
-        prevPushTime = millis() + 10000; // tunggu 10 detik
-        if (pompa1.state()) {
-          pompa1.off();
-        } else {
-          pompaOn(konfig.durasi < 120 ? konfig.durasi : 120);
-        }
-      }
-    } else if (prevPushTime < millis()) {
-      prevPushTime = millis();
+  if (button1.pushed()) {
+    if (pompa1.state()) {
+      pompa1.off();
+    } else {
+      pompa1On(konfig.durasi < 120 ? konfig.durasi : 120);
     }
-    prevPushState = true;
-  } else {
-    prevPushState = false;
   }
 }
 
@@ -406,11 +438,11 @@ void handleRelays() {
 */
 long prevTimeNutrisi = 0, nextNutrisi = 0;
 void handleNutrisi() {
-  long t = millis() / 1000, selisih;
+  long t = detik(), selisih;
   float x;
   int P = 4000; // kepekatan larutan tambahan
   float K = 100.0, duration = 0; // dari percobaan
-  if (nextNutrisi > 0 && nextNutrisi < millis()) {
+  if (nextNutrisi > 0 && nextNutrisi < detik()) {
     nextNutrisi = 0; // tunggu schedule berikutnya
     selisih = t - prevTimeNutrisi;
     prevTimeNutrisi = t;
@@ -428,33 +460,26 @@ void handleNutrisi() {
   }
 }
 
-long nextSchedule = 600 * 1000; // sekedul pertama 5 menit setelah nyalah
+long nextSchedule = 60; // sekedul pertama 1 menit setelah menyalah
 void handleSchedule() {
   // scheduler
-  if (nextSchedule < millis()) {
+  if (nextSchedule < detik()) {
     if (!pompa1.state()) {
-      pompaOn(konfig.durasi);
+      pompa1On(konfig.durasi);
     }
   }
 }
 
 long nextReconnect = 0;
 void handleReconnect() {
-  if (nextReconnect < millis()) {
+  if (nextReconnect < detik()) {
     if (WiFi.status() != WL_CONNECTED) {
       initBlynk();
+      nextReconnect = detik() + 300; // 5 menit lagi
     } else if (!Blynk.connected()) {
       Blynk.connect();
+      nextReconnect = detik() + 60; // 1 menit lagi
     }
-    nextReconnect = millis() + 300 * 1000; // 5 menit lagi
-  }
-}
-
-long nextSync = 0;
-void handleSynchron() {
-  if (nextSync < millis()) {
-    nextSync = millis() + 600 * 1000; // 10 menit lagi
-    synchronData("");
   }
 }
 
@@ -562,23 +587,34 @@ String readAnalog(String s) {
 }
 
 String setPompaOn(String s) {
-  int i = 0, inp = getIntFromStr(s, i);
-  if (inp < 1) {
-    inp = 1;
-  } else if (inp > 5) {
-    inp = 5;
+  int i = 0, inp;
+  if (s.length() == 0) {
+    inp = konfig.durasi;
+  } else {
+    inp = getIntFromStr(s, i);
   }
-  pompaOn(inp * 60);
-  return "ON " + String(inp) + " menit";
+  if (inp < 15) {
+    inp = 15;
+  } else if (inp > 300) {
+    inp = 300;
+  }
+  pompa1On(inp);
+  return "ON " + String(inp) + " detik";
 }
 
-String synchronData(String s) {
-  Blynk.virtualWrite(PPM_VALUE_PIN, getTds());
-  Blynk.virtualWrite(BUTTON_PIN, pompa1.state());
-  Blynk.virtualWrite(PPM_KONFIG_PIN, konfig.ppm);
-  Blynk.virtualWrite(PERIODE_KONFIG_PIN, konfig.periode);
-  Blynk.virtualWrite(DURASI_KONFIG_PIN, konfig.durasi);
-  return "Done";
+String getStatusPompa(String s) {
+  long t = nextSchedule - detik();
+  String r = "";
+  if (pompa1.state()) {
+    r += "POMPA " + pompa1.status();
+  } else {
+    r += "POMPA OFF";
+    if (t > 0) {
+      r += " -> ";
+      r += String(t / 60) + ":" + String(t % 60);
+    }
+  }
+  return r;
 }
 
 /* ******************************************************* */
@@ -605,7 +641,7 @@ float getTds() {
   // konstanta diperoleh dari percobaan. Hasil dari fungsi ini dibandingkan dengan tds meter standar. Hasilnya diregresikan
   // Baca README.md
   float C1 = -15.0, C2 = 620.0; // <- dari regresi linier, mungkin berbeda tergantung nilai R yg dipakai
-  float x1, x2, ec;
+  float x1, x2, ec, tds;
   int i;
 
   /* dari pengalaman. kalau probe yang dicelupkan ke air diberi arus searah terus menerus akan terjadi elektrolisis
@@ -635,12 +671,18 @@ float getTds() {
 
   // konversi ke ec
   ec = 0.5 * (x1 / (1 - x1) + (1 - x2) / x2);
-  return C1 + C2 * ec;
+  tds = C1 + C2 * ec;
+  return tds > 0 ? tds : 0;
 }
 
-void pompaOn(int duration) {
-  nextNutrisi = millis() + (duration < 180 ? duration : 180) * 1000; // tambah nutrisi setelah pompa mati
-  nextSchedule = millis() + konfig.periode * 60 * 1000;
+void pompa1On(int duration) {
+  nextNutrisi = detik() + (duration < 180 ? duration : 180); // tambah nutrisi setelah pompa mati
+  if (year() < 2017 || (hour() > 6 && hour() < 18)) {
+    nextSchedule = detik() + konfig.periode * 60;
+  } else {
+    nextSchedule = detik() + 2 * konfig.periode * 60; // kalau malam
+  }
   pompa1.on(duration);
 }
+
 
