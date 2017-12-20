@@ -18,33 +18,33 @@
 #include <TimeLib.h>
 #include <LiquidCrystal_I2C.h>
 #include <Button.h>
+#include <Wire.h>
 
 #if defined(ARDUINO_ESP8266_WEMOS_D1MINI)    // wemos
-#include <IRremoteESP8266.h>
-#include <IRrecv.h>
-#include <IRutils.h>
 
 #define TDS_SOURCE_1 D0
 #define TDS_SOURCE_2 D3
-#define RELAY_VALVE D5
-#define RELAY_POMPA1 D6
-#define PUSH_BUTTON D4
+#define RELAY_VALVE D4
+#define RELAY_POMPA1 D5
 #define RECV_PIN D7
-#define CONST_A -15.0      //  konstanta regresi tds
-#define CONST_B 310.0      //  Y = CONST_A + CONST_B * ec
+
+#define B_DOWN D6
+#define B_OK D7
+#define B_UP D8
+
 #define IS_WEMOS true
 
 #else // arduino
-#include <IRremote.h>
 
 #define TDS_SOURCE_1 2
 #define TDS_SOURCE_2 5
 #define RELAY_VALVE 7
 #define RELAY_POMPA1 8
-#define PUSH_BUTTON 6
-#define RECV_PIN 11
-#define CONST_A -10.0      //  konstanta regresi tds
-#define CONST_B 500.0      //  Y = CONST_A + CONST_B * ec
+#define RECV_PIN 4
+
+#define B_DOWN 10
+#define B_UP 11
+#define B_OK 12
 #endif
 
 // kode IRremote
@@ -165,33 +165,41 @@ class TProcess {
     }
 };
 
+/* Active LOW */
 class TRelay {
   private:
     byte _pin;
     long _after;
     long _until;
+    void _on() {
+      digitalWrite(_pin, LOW);
+    }
+    void _off() {
+      digitalWrite(_pin, HIGH);
+    }
   public:
     TRelay(byte pin) {
       _pin = pin;
       _after = 0;
       _until = 0;
       pinMode(_pin, OUTPUT);
+      _off();
     }
     void run() {
       if (_after > 0 && _after < detik()) {
         _after = 0;
-        digitalWrite(_pin, HIGH);
+        _on();
       }
       if (_until > 0 && _until < detik()) {
         _until = 0;
-        digitalWrite(_pin, LOW);
+        _off();
       }
     }
 
     void on(unsigned int durasi, unsigned int after = 0) {
       if (after == 0) {
         _after = 0;
-        digitalWrite(_pin, HIGH);
+        _on();
       } else {
         _after = detik() + after;
       }
@@ -201,27 +209,11 @@ class TRelay {
     void off() {
       _until = 0;
       _after = 0;
-      digitalWrite(_pin, LOW);
+      _off();
     }
 
     boolean state() {
-      return digitalRead(_pin);
-    }
-
-    String status() {
-      String s = "";
-      long t;
-      if (digitalRead(_pin)) {
-        s += "ON";
-        t = _until - detik();
-      } else {
-        s += "OFF";
-        t = _after - detik();
-      }
-      if (t > 0) {
-        s += " -> " + String(t / 60) + ":" + String(t % 60);
-      }
-      return s;
+      return !digitalRead(_pin);
     }
 };
 
@@ -233,32 +225,29 @@ struct TConfig {
   int ppm;
   int periode; // dalam menit
   int duration; // dalam detik
+  float tdsFactor;
 };
 struct TAppState {
   byte current, last;
-  int
-  //ppm, duration, periode,
-  tds;
+  float rawTds;
   long nextSave, lightOff;
   bool changed;
 };
 
 TAppState appState;
-Button button(PUSH_BUTTON, BUTTON_PULLUP);
+Button bUp(B_UP, BUTTON_PULLDOWN), bDown(B_DOWN, BUTTON_PULLDOWN), bOk(B_OK, BUTTON_PULLDOWN);
 
 TProcess process;
 TConfig konfig;
 TRelay valve(RELAY_VALVE), pompa1(RELAY_POMPA1);
 
-IRrecv irrecv(RECV_PIN);
-decode_results results;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 /* ******************************************************* */
 //                     MAIN FUNCTION
 /* ******************************************************* */
 void setup(void) {
-  int i;
+  Wire.begin();
   TConfig k;
   Serial.begin(115200);
   eepromBegin();
@@ -271,22 +260,29 @@ void setup(void) {
   process.addCommand("ppm", setPpm);
   process.addCommand("periode", setPeriode);
   process.addCommand("durasi", setDurasi);
-  process.addCommand("analog", readAnalog);
   process.addCommand("on", setPompaOn);
-  process.addCommand("status", getStatusPompa);
+  process.addCommand("scan", scanI2C);
+  process.addCommand("print", printLcd);
 
   // read config
   // ppm
   EEPROM.get(0, k);
-  konfig.ppm = (k.ppm >= PPM_MIN && k.ppm <= PPM_MAX) ? k.ppm : 100; // default 1000
+  konfig.ppm = (k.ppm >= PPM_MIN && k.ppm <= PPM_MAX) ? k.ppm : 100; // dikali 10. default 100 (1000 ppm).
   konfig.periode = (k.periode >= PERIODE_MIN && k.periode <= PERIODE_MAX) ? k.periode : 60; // default 60 menit
   konfig.duration = (k.duration >= DURATION_MIN && k.duration <= DURATION_MAX) ? k.duration : 20; // default 20 detik
+  konfig.tdsFactor = (k.tdsFactor > 0.0 && k.tdsFactor <= 5000.0) ? k.tdsFactor : 250.0; // default 250
 
-  irrecv.enableIRIn();
   lcd.begin();
+  lcd.clear();
 
   appState.current = 0;
   appState.last = 99;
+  appState.lightOff = 60;
+
+  bOk.releaseHandler(onOkRelease);
+  bUp.holdHandler(onUpHold, 50);
+  bDown.holdHandler(onDownHold, 50);
+  bOk.holdHandler(onOkHold, 2000);
 }
 
 /**
@@ -294,50 +290,45 @@ void setup(void) {
 */
 void loop(void) {
   process.processSerial();
-  handleReadTds();
   handleDisplay();
-  handleRemote();
   handleSave();
-  handlePushButton();
   handleSchedule();
   handleRelays();
   handleNutrisi();
+  handleButton();
 }
 
 
 //* ******************************************************* */
 //                     LOOP FUNCTION
 //* ******************************************************* */
-
-long nextReadTds = 0;
-int readTds() {
-  appState.tds = getTds();
-  nextReadTds = detik() + NEXT_READ_TDS;
-  appState.changed = appState.changed || appState.current == 0;
-  return appState.tds;
+void onUpHold(Button &btn) {
+  handleAction(acUp);
 }
 
-void handlePushButton() {
-  if (button.isPressed() && button.held(50)) {
-    if (pompa1.state()) {
-      pompa1.off();
-      Serial.println("OFF");
-    } else {
-      pompa1On(konfig.duration);
-      Serial.println("ON");
-    }
+void onDownHold(Button &btn) {
+  handleAction(acDown);
+}
+
+void onOkHold(Button &btn) {
+  handleAction(acOk);
+}
+
+void onOkRelease(Button &btn) {
+  if (btn.holdTime() > 50 && btn.holdTime() < 2000) {
+    handleAction(acMenu);
   }
+}
+
+void handleButton() {
+  bUp.isPressed();
+  bDown.isPressed();
+  bOk.isPressed();
 }
 
 void handleRelays() {
   valve.run();
   pompa1.run();
-}
-
-void handleReadTds() {
-  if (nextReadTds < detik()) {
-    readTds();
-  }
 }
 
 /*
@@ -355,7 +346,7 @@ void handleNutrisi() {
     selisih = t - prevTimeNutrisi;
     prevTimeNutrisi = t;
 
-    x = readTds();
+    x = getTds(-1);
     if (x < konfigPpm) { // jika nutrisinya kurang
       duration = K * (konfigPpm - x) / (P - konfigPpm);
       if (duration > 60) {
@@ -377,19 +368,27 @@ void handleSchedule() {
 }
 
 void handleDisplay() {
-  char txtInfo[][10] = {"TDS     ", "PPM     ", "DURATION", "PERIODE "};
-  int vals[4] = {appState.tds, konfig.ppm * 10, konfig.duration, konfig.periode};
+  char txtInfo[][16] = {
+    "TDS           ",
+    "PPM           ",
+    "DURASI (dtk)  ",
+    "INTERVAL (mnt)",
+    "KALIBRASI TDS "
+  };
+  int tds = appState.rawTds * konfig.tdsFactor;
+  int vals[5] = {tds, konfig.ppm * 10, konfig.duration, konfig.periode, tds};
   char buf[6];
 
   if (appState.current != appState.last) {
-    lcd.setCursor(5, 0);
+    lcd.clear();
+    lcd.setCursor(0, 0);
     lcd.print(txtInfo[appState.current]);
     appState.last = appState.current;
     appState.changed = true;
   }
   if (appState.changed) {
     snprintf(buf, 6, "%4d", vals[appState.current]);
-    lcd.setCursor(10, 1);
+    lcd.setCursor(12, 1);
     lcd.print(buf);
     appState.changed = false;
   }
@@ -407,13 +406,21 @@ void handleAction(byte action) {
 
   switch (action) {
     case acMenu:
-      if (appState.lightOff > 0) {
-        appState.current = (appState.current + 1) % 4;
+      if (appState.lightOff > 0 && appState.last != 99) {
+        appState.current = (appState.current + 1) % 5;
+      }
+      if (appState.current == 0) {
+        getTds(1);
       }
       if (appState.nextSave > 0) {
         appState.nextSave = detik();
       }
       light = true;
+      break;
+
+    case acOk:
+      light = true;
+      pompa1.state() ? pompa1.off() : pompa1On(konfig.duration);
       break;
 
     case acDown:
@@ -422,8 +429,9 @@ void handleAction(byte action) {
       light = true;
       switch (appState.current) {
         case 0:
-          nextReadTds = 0;
+          getTds(1);
           break;
+
         case 1: // ppm
           if ((updown == -1 && konfig.ppm > PPM_MIN) || (updown == 1 && konfig.ppm < PPM_MAX)) {
             konfig.ppm += updown;
@@ -442,6 +450,11 @@ void handleAction(byte action) {
             appState.changed = true;
           }
           break;
+        case 4: // kalibrasi
+          if ((updown == -1 && konfig.tdsFactor > 10) || (updown == 1 && konfig.tdsFactor < 4900)) {
+            konfig.tdsFactor = updown * (1 + 1.01 * konfig.tdsFactor);
+            appState.changed = true;
+          }
         default:
           break;
       }
@@ -449,52 +462,15 @@ void handleAction(byte action) {
         appState.nextSave = detik() + 5;
       }
       break;
-
-    case acOk:
-      light = true;
-      pompa1.state() ? pompa1.off() : pompa1On(konfig.duration);
-      break;
   }
   if (light) {
     if (appState.lightOff == 0) {
       lcd.backlight();
     }
-    appState.lightOff = detik() + 60;
+    appState.lightOff = detik() + 15;
   }
 }
 
-void handleRemote() {
-  if (irrecv.decode(&results))
-  {
-    switch (results.value) {
-      case IR_MENU:
-        handleAction(acMenu);
-        break;
-
-      case IR_UP:
-        handleAction(acUp);
-        break;
-
-      case IR_DOWN:
-        handleAction(acDown);
-        break;
-
-      case IR_OK:
-        handleAction(acOk);
-        break;
-
-      default:
-#if defined(IS_WEMOS)
-        serialPrintUint64(results.value, HEX);
-#else
-        Serial.print(results.value, HEX);
-#endif
-        Serial.println("");
-        break;
-    }
-    irrecv.resume(); // Receive the next value
-  }
-}
 
 void handleSave() {
   if (appState.nextSave > 0 && appState.nextSave < detik()) {
@@ -520,6 +496,31 @@ void eepromBegin() {
 //* ******************************************************* */
 //                     SERIAL FUNCTION
 //* ******************************************************* */
+String printLcd(String s) {
+  lcd.home();
+  lcd.print(s);
+  return s;
+}
+
+String scanI2C(String s) {
+  String r = "";
+  int error, i, c = 0;
+  for (i = 1; i < 127; i++) {
+    Wire.beginTransmission(i);
+    error = Wire.endTransmission();
+    if (error == 0) {
+      r += "I2C address 0x" + String(i, HEX) + " found\n";
+      c++;
+    } else if (error == 4) {
+      r += "Unknown error 0x" + String(i, HEX) + "\n";
+    }
+  }
+  if (c == 0) {
+
+  }
+
+  return r;
+}
 String getTimeNow(String s) {
   char formatted[32];
   snprintf(formatted, 32, "%d-%02d-%02d %02d:%02d:%02d %d", year(), month(), day(), hour(), minute(), second(), weekday());
@@ -527,7 +528,7 @@ String getTimeNow(String s) {
 }
 
 String samplingTds(String s) {
-  int x = readTds();
+  int x = getTds(-1);
   return String(x);
 }
 
@@ -567,10 +568,6 @@ String setDurasi(String s) {
   return String(konfig.duration);
 }
 
-String readAnalog(String s) {
-  return String(analogRead(A0));
-}
-
 String setPompaOn(String s) {
   int i = 0, inp;
   if (s.length() == 0) {
@@ -585,21 +582,6 @@ String setPompaOn(String s) {
   }
   pompa1On(inp);
   return "ON " + String(inp) + " detik";
-}
-
-String getStatusPompa(String s) {
-  long t = nextSchedule - detik();
-  String r = "";
-  if (pompa1.state()) {
-    r += "POMPA " + pompa1.status();
-  } else {
-    r += "POMPA OFF";
-    if (t > 0) {
-      r += " -> ";
-      r += String(t / 60) + ":" + String(t % 60);
-    }
-  }
-  return r;
 }
 
 /* ******************************************************* */
@@ -622,10 +604,10 @@ int getIntFromStr(String ss, int &i) {
   return r;
 }
 
-int getTds() {
+float getRawTds() {
   // konstanta diperoleh dari percobaan. Hasil dari fungsi ini dibandingkan dengan tds meter standar. Hasilnya diregresikan
   // Baca README.md
-  float x1, x2, ec, tds;
+  float x1, x2;
 
   /* dari pengalaman. kalau probe yang dicelupkan ke air diberi arus searah terus menerus akan terjadi elektrolisis
       sehinggah nilai pengukuran akan berubah.
@@ -648,9 +630,22 @@ int getTds() {
   digitalWrite(TDS_SOURCE_2, LOW);
 
   // konversi ke ec
-  ec = x1 / (1 - x1) + (1 - x2) / x2;
-  tds = CONST_A + CONST_B * ec;
-  return tds > 0 ? (int)tds : 0;
+  return x1 / (1 - x1) + (1 - x2) / x2;
+}
+
+int getTds() {
+  return getTds(0);
+}
+
+long nextReadTds = 0;
+int getTds(int t) {
+  int c = (NEXT_READ_TDS - 30) * t;
+  if (t < 0 || (nextReadTds - c) < detik()) {
+    appState.rawTds = getRawTds();
+    nextReadTds = detik() + NEXT_READ_TDS;
+    appState.changed = appState.changed || appState.current == 0;
+  }
+  return (int) (konfig.tdsFactor * appState.rawTds);
 }
 
 void pompa1On(int duration) {
