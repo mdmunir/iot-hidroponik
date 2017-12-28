@@ -20,22 +20,6 @@
 #include <Button.h>
 #include <Wire.h>
 
-#if defined(ARDUINO_ESP8266_WEMOS_D1MINI)    // wemos
-
-#define TDS_SOURCE_1 D0
-#define TDS_SOURCE_2 D3
-#define RELAY_VALVE D4
-#define RELAY_POMPA1 D5
-#define RECV_PIN D7
-
-#define B_DOWN D6
-#define B_OK D7
-#define B_UP D8
-
-#define IS_WEMOS true
-
-#else // arduino
-
 #define TDS_SOURCE_1 2
 #define TDS_SOURCE_2 5
 #define RELAY_VALVE 7
@@ -45,7 +29,14 @@
 #define B_DOWN 10
 #define B_UP 11
 #define B_OK 12
-#endif
+
+// kode IRremote
+#define IR_UP 0xFFFF01
+#define IR_DOWN 0xFFFF02
+#define IR_LEFT 0xFFFF03
+#define IR_RIGHT 0xFFFF04
+#define IR_OK 0xFFFF05
+#define IR_MENU 0xFFFF06
 
 // batas konfig
 #define PPM_MIN 50 // dikali 10
@@ -55,7 +46,7 @@
 #define PERIODE_MIN 15 // menit
 #define PERIODE_MAX 360 // 6 jam
 
-#define NEXT_READ_TDS 600 // 10 menit
+#define NEXT_READ_TDS 30 // 10 menit
 
 /* *************************************************** */
 //              CLASS PROCESS SERIAL
@@ -66,7 +57,6 @@ unsigned long detik() {
 }
 
 typedef String (*TStringCallback)(String);
-typedef void (*TVoidCallback)(void);
 enum TEnumAction {acUp, acDown, acLeft, acRight, acOk, acMenu} ;
 
 class TCommand {
@@ -210,31 +200,6 @@ class TRelay {
     }
 };
 
-class TCall {
-  private:
-    long _t;
-    TVoidCallback _callback;
-  public:
-    TCall(TVoidCallback callback) {
-      _t = 0;
-      _callback = callback;
-    }
-    void call(unsigned long after = 0) {
-      if (after > 0) {
-        _t = detik() + after;
-      } else {
-        _t = 0;
-        _callback();
-      }
-    }
-    void run() {
-      if (_t > 0 && _t < detik()) {
-        _t = 0;
-        _callback();
-      }
-    }
-};
-
 /* *************************************************** */
 //              GLOBAL VAR
 /* *************************************************** */
@@ -258,7 +223,6 @@ Button bUp(B_UP, BUTTON_PULLDOWN), bDown(B_DOWN, BUTTON_PULLDOWN), bOk(B_OK, BUT
 TProcess process;
 TConfig konfig;
 TRelay valve(RELAY_VALVE), pompa1(RELAY_POMPA1);
-TCall nutrisi(handleNutrisi);
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -268,7 +232,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 void setup(void) {
   Wire.begin();
   TConfig k;
-  Serial.begin(115200);
+  Serial.begin(9600);
   eepromBegin();
 
   pinMode(TDS_SOURCE_1, OUTPUT);
@@ -307,6 +271,7 @@ void loop(void) {
   handleSave();
   handleSchedule();
   handleRelays();
+  handleNutrisi();
   handleButton();
 }
 
@@ -339,7 +304,6 @@ void handleButton() {
 }
 
 void handleRelays() {
-  nutrisi.run();
   valve.run();
   pompa1.run();
 }
@@ -348,18 +312,25 @@ void handleRelays() {
    Jika kepekatan larutan kurang dari yang diharapkan.
    Selenoid valve akan dibuka selama waktu yang sebanding dengan kekurangannya.
 */
+long prevTimeNutrisi = 0, nextNutrisi = 0;
 void handleNutrisi() {
+  long t = detik(), selisih;
   int x, P = 4000; // kepekatan larutan tambahan
   int konfigPpm = konfig.ppm * 10;
   float K = 100.0, duration = 0; // dari percobaan
+  if (nextNutrisi > 0 && nextNutrisi < detik()) {
+    nextNutrisi = 0; // tunggu schedule berikutnya
+    selisih = t - prevTimeNutrisi;
+    prevTimeNutrisi = t;
 
-  x = getTds(-1);
-  if (x < konfigPpm) { // jika nutrisinya kurang
-    duration = K * (konfigPpm - x) / (P - konfigPpm);
-    if (duration > 60) {
-      duration = 60;
+    x = getTds(-1);
+    if (x < konfigPpm) { // jika nutrisinya kurang
+      duration = K * (konfigPpm - x) / (P - konfigPpm);
+      if (duration > 60) {
+        duration = 60;
+      }
+      valve.on((int)duration);
     }
-    valve.on((int)duration);
   }
 }
 
@@ -381,7 +352,7 @@ void handleDisplay() {
     "INTERVAL (mnt)",
     "KALIBRASI TDS "
   };
-  int tds = (appState.lightOff > 0 && appState.current == 0) ? getTds() : appState.rawTds * konfig.tdsFactor;
+  int tds = getTds(appState.current == 0 && appState.lightOff > 0 ? 1 : 0);
   int vals[5] = {tds, konfig.ppm * 10, konfig.duration, konfig.periode, tds};
   char buf[6];
 
@@ -415,6 +386,9 @@ void handleAction(byte action) {
       if (appState.lightOff > 0 && appState.last != 99) {
         appState.current = (appState.current + 1) % 5;
       }
+      if (appState.current == 0) {
+        getTds(1);
+      }
       if (appState.nextSave > 0) {
         appState.nextSave = detik();
       }
@@ -431,6 +405,10 @@ void handleAction(byte action) {
       updown = action == acDown ? -1 : 1;
       light = true;
       switch (appState.current) {
+        case 0:
+          getTds(1);
+          break;
+
         case 1: // ppm
           if ((updown == -1 && konfig.ppm > PPM_MIN) || (updown == 1 && konfig.ppm < PPM_MAX)) {
             konfig.ppm += updown;
@@ -571,12 +549,12 @@ float getRawTds() {
 }
 
 int getTds() {
-  return getTds(false);
+  return getTds(0);
 }
 
 long nextReadTds = 0;
-int getTds(bool force) {
-  if (force || nextReadTds < detik()) {
+int getTds(byte force) {
+  if (force == 2 || (force == 1 && nextReadTds < detik())) {
     appState.rawTds = getRawTds();
     nextReadTds = detik() + NEXT_READ_TDS;
     appState.changed = appState.changed || appState.current == 0;
@@ -585,7 +563,7 @@ int getTds(bool force) {
 }
 
 void pompa1On(int duration) {
-  nutrisi.call(duration); // tambah nutrisi setelah pompa mati
+  nextNutrisi = detik() + duration; // tambah nutrisi setelah pompa mati
   if (year() < 2017 || (hour() > 6 && hour() < 18)) {
     nextSchedule = detik() + konfig.periode * 60;
   } else {
